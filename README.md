@@ -71,7 +71,7 @@ Cord intentionally limits its supported types to those that can be canonically r
 | Enums | ✅ | |
 | Custom Set | ✅ | Canonically ordered |
 | Custom DateTime | ✅ | UTC timestamp representation |
-| Maps | ⏳ | Planned, but currently unsupported |
+| Maps | ✅ | Canonically ordered by key |
 | Floating point | ❌ | Intentionally excluded due to NaN/representation issues |
 
 ## ☢️ Threat Model
@@ -92,7 +92,7 @@ Cord does **not** protect against:
 ## 🛰️ Advanced Example: Sets, Enums, and Custom Types
 
 ```rust
-use cord::{serialize, deserialize, Set};
+use cord::{serialize, deserialize, Set, Map};
 use serde::{Serialize, Deserialize};
 use std::collections::HashSet;
 
@@ -110,13 +110,14 @@ enum AccessLevel {
     Restricted(Vec<String>),
 }
 
-// Document type using a custom type, enum, and set
+// Document type using a custom type, enum, set, and map
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 struct Document {
     id: u32,
     metadata: Metadata,
     tags: Set<String>,
     access: AccessLevel,
+    attributes: Map<String, String>,
 }
 
 fn main() {
@@ -124,7 +125,11 @@ fn main() {
     let mut tags = HashSet::new();
     tags.insert("important".to_string());
     tags.insert("draft".to_string());
-    
+
+    let mut attributes = std::collections::HashMap::new();
+    attributes.insert("priority".to_string(), "high".to_string());
+    attributes.insert("version".to_string(), "1.1.0".to_string());
+
     let doc = Document {
         id: 42,
         metadata: Metadata {
@@ -133,13 +138,14 @@ fn main() {
         },
         tags: Set::from(tags),
         access: AccessLevel::Restricted(vec!["alice".to_string(), "bob".to_string()]),
+        attributes: Map::from(attributes),
     };
 
     // Serialize and deserialize
     let serialized = serialize(&doc).unwrap();
     let deserialized: Document = deserialize(&serialized).unwrap();
 
-    // Tags are preserved but their internal representation is canonicalized
+    // Sets and Maps are preserved but their internal representation is canonicalized
     assert_eq!(doc, deserialized);
 }
 ```
@@ -173,7 +179,6 @@ However, be aware that the canonicalization process adds overhead compared to fo
 Our current priorities are:
 
 - Comprehensive fuzzing
-- Support for additional common types
 - Performance benchmarking and optimization
 - Language bindings (Python and JavaScript first)
 - Configurable limits for nested structures

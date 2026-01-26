@@ -57,7 +57,7 @@ macro_rules! serialize_unsupported {
     };
 }
 
-impl<W> ser::Serializer for CordSerializer<'_, W>
+impl<'a, W> ser::Serializer for CordSerializer<'a, W>
 where
     W: ?Sized + std::io::Write,
 {
@@ -67,7 +67,7 @@ where
     type SerializeTuple = Self;
     type SerializeTupleStruct = Self;
     type SerializeTupleVariant = Self;
-    type SerializeMap = Self;
+    type SerializeMap = MapSerializer<'a, W>;
     type SerializeStruct = Self;
     type SerializeStructVariant = Self;
 
@@ -190,7 +190,7 @@ where
     }
 
     fn serialize_map(self, _len: Option<usize>) -> CordResult<Self::SerializeMap> {
-        Err(CordError::NotSupported("map"))
+        Ok(MapSerializer::new(self))
     }
 
     #[allow(unused_mut)]
@@ -290,30 +290,69 @@ where
     }
 }
 
-impl<W> ser::SerializeMap for CordSerializer<'_, W>
+struct MapSerializer<'a, W: ?Sized> {
+    serializer: CordSerializer<'a, W>,
+    entries: Vec<(Vec<u8>, Vec<u8>)>,
+    next_key: Option<Vec<u8>>,
+}
+
+impl<'a, W: ?Sized> MapSerializer<'a, W> {
+    fn new(serializer: CordSerializer<'a, W>) -> Self {
+        MapSerializer {
+            serializer,
+            entries: Vec::new(),
+            next_key: None,
+        }
+    }
+}
+
+impl<W> ser::SerializeMap for MapSerializer<'_, W>
 where
     W: ?Sized + std::io::Write,
 {
     type Ok = ();
     type Error = CordError;
 
-    fn serialize_key<T>(&mut self, _key: &T) -> CordResult<()>
+    fn serialize_key<T>(&mut self, key: &T) -> CordResult<()>
     where
         T: ?Sized + Serialize,
     {
-        Err(CordError::NotSupported("map key"))
+        let mut key_bytes = Vec::new();
+        key.serialize(CordSerializer::new(&mut key_bytes))?;
+        self.next_key = Some(key_bytes);
+        Ok(())
     }
 
-    fn serialize_value<T>(&mut self, _value: &T) -> CordResult<()>
+    fn serialize_value<T>(&mut self, value: &T) -> CordResult<()>
     where
         T: ?Sized + Serialize,
     {
-        Err(CordError::NotSupported("map value"))
+        let key_bytes = self.next_key.take().ok_or_else(|| {
+            CordError::SerializationError("serialize_value called before serialize_key".into())
+        })?;
+
+        let mut value_bytes = Vec::new();
+        value.serialize(CordSerializer::new(&mut value_bytes))?;
+
+        self.entries.push((key_bytes, value_bytes));
+        Ok(())
     }
 
-    #[allow(unused_mut)]
     fn end(mut self) -> CordResult<()> {
-        Err(CordError::NotSupported("map end"))
+        self.entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+        for i in 1..self.entries.len() {
+            if self.entries[i - 1].0 == self.entries[i].0 {
+                return Err(CordError::ValidationError("Duplicate keys in map"));
+            }
+        }
+
+        self.serializer.serialize_usize(self.entries.len())?;
+        for (key, value) in self.entries {
+            self.serializer.output.write_all(&key)?;
+            self.serializer.output.write_all(&value)?;
+        }
+        Ok(())
     }
 }
 
@@ -384,10 +423,23 @@ impl ser::Serialize for crate::DateTime {
     }
 }
 
+impl<K: Serialize, V: Serialize> Serialize for crate::Map<K, V> {
+    fn serialize<S>(&self, serializer: S) -> CordResult<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(self.inner.len()))?;
+        for (k, v) in &self.inner {
+            map.serialize_entry(k, v)?;
+        }
+        map.end()
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::{serialize, DateTime};
-    use crate::{Bytes, CordError};
+    use crate::{serialize, Bytes, CordError, DateTime, Map};
     use chrono::Utc;
     use integer_encoding::VarInt;
     use serde::Serialize;
@@ -565,11 +617,42 @@ mod tests {
     }
 
     #[test]
+    fn serialize_map() {
+        let mut inner = std::collections::HashMap::new();
+        inner.insert("aa".to_string(), 3_u32);
+        inner.insert("b".to_string(), 2_u32);
+        inner.insert("a".to_string(), 1_u32);
+
+        let map = Map::from(inner);
+        // "a" (1, 97) < "b" (1, 98) < "aa" (2, 97, 97)
+        assert_eq!(
+            serialize(&map).unwrap(),
+            vec![3, 1, 97, 1, 1, 98, 2, 2, 97, 97, 3]
+        );
+    }
+
+    #[test]
     fn serialize_unsupported_char() {
         let value: char = 'A';
         assert_eq!(
             serialize(&value).unwrap_err(),
             CordError::NotSupported("char")
         );
+    }
+
+    #[test]
+    fn serialize_map_canonical() {
+        let mut inner1 = std::collections::HashMap::new();
+        inner1.insert("a".to_string(), 1_u32);
+        inner1.insert("b".to_string(), 2_u32);
+
+        let mut inner2 = std::collections::HashMap::new();
+        inner2.insert("b".to_string(), 2_u32);
+        inner2.insert("a".to_string(), 1_u32);
+
+        let map1 = Map::from(inner1);
+        let map2 = Map::from(inner2);
+
+        assert_eq!(serialize(&map1).unwrap(), serialize(&map2).unwrap());
     }
 }

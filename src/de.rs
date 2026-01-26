@@ -1,4 +1,5 @@
 use crate::result::{CordError, CordResult};
+use crate::Map;
 use crate::Set;
 use crate::{Bytes, DateTime};
 use integer_encoding::VarInt;
@@ -244,11 +245,12 @@ impl<'de> de::Deserializer<'de> for &mut CordDeserializer<'de> {
         visitor.visit_seq(SeqDeserializer::new(self, len))
     }
 
-    fn deserialize_map<V>(self, _visitor: V) -> CordResult<V::Value>
+    fn deserialize_map<V>(self, visitor: V) -> CordResult<V::Value>
     where
         V: de::Visitor<'de>,
     {
-        Err(CordError::NotSupported("map"))
+        let len = self.parse_varint::<usize>()?;
+        visitor.visit_map(MapDeserializer::new(self, len))
     }
 
     fn deserialize_struct<V>(
@@ -314,6 +316,64 @@ impl<'de> de::SeqAccess<'de> for SeqDeserializer<'_, 'de> {
             self.remaining -= 1;
             seed.deserialize(&mut *self.de).map(Some)
         }
+    }
+
+    fn size_hint(&self) -> Option<usize> {
+        Some(self.remaining)
+    }
+}
+
+struct MapDeserializer<'a, 'de: 'a> {
+    de: &'a mut CordDeserializer<'de>,
+    remaining: usize,
+    previous_key: Option<Vec<u8>>,
+}
+
+impl<'a, 'de> MapDeserializer<'a, 'de> {
+    fn new(de: &'a mut CordDeserializer<'de>, remaining: usize) -> Self {
+        Self {
+            de,
+            remaining,
+            previous_key: None,
+        }
+    }
+}
+
+impl<'de> de::MapAccess<'de> for MapDeserializer<'_, 'de> {
+    type Error = CordError;
+
+    fn next_key_seed<K>(&mut self, seed: K) -> CordResult<Option<K::Value>>
+    where
+        K: de::DeserializeSeed<'de>,
+    {
+        if self.remaining == 0 {
+            Ok(None)
+        } else {
+            self.remaining -= 1;
+
+            let start_input = self.de.input;
+            let key = seed.deserialize(&mut *self.de)?;
+            let end_input = self.de.input;
+            let key_bytes = &start_input[..start_input.len() - end_input.len()];
+
+            if let Some(ref prev) = self.previous_key {
+                if prev.as_slice() >= key_bytes {
+                    return Err(CordError::ValidationError(
+                        "Unordered or duplicate map keys",
+                    ));
+                }
+            }
+            self.previous_key = Some(key_bytes.to_vec());
+
+            Ok(Some(key))
+        }
+    }
+
+    fn next_value_seed<V>(&mut self, seed: V) -> CordResult<V::Value>
+    where
+        V: de::DeserializeSeed<'de>,
+    {
+        seed.deserialize(&mut *self.de)
     }
 
     fn size_hint(&self) -> Option<usize> {
@@ -483,10 +543,58 @@ impl<'de> de::Deserialize<'de> for DateTime {
     }
 }
 
+struct MapVisitor<K, V> {
+    marker: PhantomData<fn() -> Map<K, V>>,
+}
+
+impl<K, V> MapVisitor<K, V> {
+    fn new() -> Self {
+        Self {
+            marker: PhantomData,
+        }
+    }
+}
+
+impl<'de, K, V> de::Visitor<'de> for MapVisitor<K, V>
+where
+    K: Eq + Hash + Deserialize<'de>,
+    V: Deserialize<'de>,
+{
+    type Value = Map<K, V>;
+
+    fn expecting(&self, formatter: &mut Formatter) -> std::fmt::Result {
+        formatter.write_str("map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> CordResult<Self::Value, A::Error>
+    where
+        A: de::MapAccess<'de>,
+    {
+        let mut inner = std::collections::HashMap::with_capacity(map.size_hint().unwrap_or(0));
+        while let Some((key, value)) = map.next_entry()? {
+            inner.insert(key, value);
+        }
+        Ok(Map::from(inner))
+    }
+}
+
+impl<'de, K, V> de::Deserialize<'de> for Map<K, V>
+where
+    K: Eq + Hash + Deserialize<'de> + Serialize,
+    V: Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> CordResult<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_map(MapVisitor::new())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::deserialize;
-    use crate::{Bytes, DateTime};
+    use crate::{Bytes, DateTime, Map};
     use chrono::Utc;
     use serde::Deserialize;
 
@@ -637,5 +745,27 @@ mod tests {
                 boolean: true
             }
         );
+    }
+
+    #[test]
+    fn deserialize_map() {
+        let input: Vec<u8> = vec![2, 1, 97, 1, 1, 98, 2];
+        let expected = Map::from([("a".to_string(), 1_u32), ("b".to_string(), 2_u32)]);
+
+        assert_eq!(deserialize::<Map<String, u32>>(&input).unwrap(), expected);
+    }
+
+    #[test]
+    fn deserialize_map_disordered_keys_fails() {
+        let input: Vec<u8> = vec![2, 1, 98, 2, 1, 97, 1];
+        let result = deserialize::<Map<String, u32>>(&input);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn deserialize_map_duplicate_keys_fails() {
+        let input: Vec<u8> = vec![2, 1, 97, 1, 1, 97, 2];
+        let result = deserialize::<Map<String, u32>>(&input);
+        assert!(result.is_err());
     }
 }
