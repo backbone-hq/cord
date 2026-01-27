@@ -59,20 +59,20 @@ assert_eq!(user, deserialized);
 
 Cord intentionally limits its supported types to those that can be canonically represented:
 
-| Type | Support | Notes |
-|------|---------|-------|
-| Boolean | ✅ | |
-| Integers (i8, u8, i16, u16, etc.) | ✅ | Uses varint encoding |
-| Strings | ✅ | UTF-8 with length prefix |
-| Byte arrays | ✅ | With length prefix |
-| Fixed-size sequences | ✅ | |
-| Options | ✅ | |
-| Struct/Tuple struct | ✅ | |
-| Enums | ✅ | |
-| Custom Set | ✅ | Canonically ordered |
-| Custom DateTime | ✅ | UTC timestamp representation |
-| Maps | ✅ | Canonically ordered by key |
-| Floating point | ❌ | Intentionally excluded due to NaN/representation issues |
+| Type                              | Support | Notes                                                   |
+| --------------------------------- | ------- | ------------------------------------------------------- |
+| Boolean                           | ✅      |                                                         |
+| Integers (i8, u8, i16, u16, etc.) | ✅      | Uses varint encoding                                    |
+| Strings                           | ✅      | UTF-8 with length prefix                                |
+| Byte arrays                       | ✅      | With length prefix                                      |
+| Fixed-size sequences              | ✅      |                                                         |
+| Options                           | ✅      |                                                         |
+| Struct/Tuple struct               | ✅      |                                                         |
+| Enums                             | ✅      |                                                         |
+| Custom Set                        | ✅      | Canonically ordered                                     |
+| Custom DateTime                   | ✅      | UTC timestamp representation                            |
+| Maps                              | ✅      | Canonically ordered by key                              |
+| Floating point                    | ❌      | Intentionally excluded due to NaN/representation issues |
 
 ## ☢️ Threat Model
 
@@ -170,17 +170,22 @@ Cord is a mature project that has seen production use in [Backbone](https://back
 
 ## ⏱️ Performance
 
-While we don't yet have comprehensive benchmarks, initial testing shows Cord performs competitively with other Rust serialization formats. The varint encoding helps keep payload sizes small for common integer values.
+Cord is designed for security and determinism, which introduces some overhead compared to non-canonical formats. However, it remains highly efficient for most use cases.
 
-However, be aware that the canonicalization process adds overhead compared to formats that don't guarantee canonical representations.
+To run the benchmarking suite locally:
+
+```bash
+cargo bench --bench performance
+```
+
+While Cord is marginally slower than non-canonical formats like `bincode` due to varint encoding and deterministic sorting of sets/maps, it provides the cryptographic guarantees necessary for security-sensitive applications without compromising overall system performance.
 
 ## 🗺️ Roadmap
 
 Our current priorities are:
 
 - Comprehensive fuzzing
-- Performance benchmarking and optimization
-- Language bindings (Python and JavaScript first)
+- Language bindings (Python, JavaScript, ...)
 - Configurable limits for nested structures
 - Formal verification of components
 
@@ -188,4 +193,4 @@ Anything else you'd like to see? [Suggest a feature](https://github.com/backbone
 
 ---
 
-Built with 🦴 by [Backbone](https://backbone.dev)
+Built with ❤️ by [Backbone](https://backbone.dev)

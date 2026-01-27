@@ -4,4 +4,4 @@ We appreciate your interest in contributing to Cord. The best way to get started
 
 If you're instead looking to discuss the direction of the project, we'd prefer if you email us at [root@backbone.dev](mailto:root@backbone.dev).
 
-This module is maintained with 🦴 by [Backbone](https://backbone.dev)
+This project is maintained with ❤️ by [Backbone](https://backbone.dev)
