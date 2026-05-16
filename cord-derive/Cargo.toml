@@ -1,0 +1,15 @@
+[package]
+name = "cord-derive"
+version = "2.0.0-rc.1"
+description = "Derive macro for the Cord canonical serialization format"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/backbone-hq/cord"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["full"] }
+quote = "1"
+proc-macro2 = "1"

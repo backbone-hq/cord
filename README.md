@@ -1,86 +1,422 @@
-# ![Cord](https://github.com/backbone-hq/cord/blob/master/media/cord.png?raw=true)
+# ![Cord](./media/banner.svg)
 
 ![Build Status](https://img.shields.io/github/actions/workflow/status/backbone-hq/cord/ci.yml?branch=master)
 ![GitHub License](https://img.shields.io/github/license/backbone-hq/cord)
 ![crates.io](https://img.shields.io/crates/v/cord)
 ![Made by Backbone](https://img.shields.io/badge/made_by-Backbone-blue)
 
-Cord is a deterministic serialization format built in Rust, designed for security-sensitive applications where consistent and unambiguous binary representations are essential.
+Cord is a compact deterministic serialization format for Rust with first-class [serde](https://serde.rs) integration.
 
-## 🏗️ Why Another Serialization Format?
+- **Rich type system** — structs, enums, sets, maps, byte arrays, date-times, decimals, UUIDs, options, and more
+- **Dynamic schemas** — define data structures at runtime, encode and decode without compiled types, and mix freely with the serde path
+- **Forward evolution** — wrap fields in `Evolving<T>` to round-trip unknown data (e.g., new enum variants) without data loss
+- **Fine-grained wire control** — tune integer encoding, length prefix widths, and variant index sizes per field
+- **Deterministic output** — every unique value produces exactly one byte sequence, making it safe to sign, hash, cache, and deduplicate serialized data
 
-Many serialization formats allow multiple binary representations of the same data (e.g., dictionaries with different key orders, or different integer encodings). This non-determinism creates problems when combining serialization with cryptographic operations like signing and hashing. **Cord guarantees that every unique semantic representation has exactly one unique binary representation.**
-
-This deterministic approach is crucial for cryptographic use cases. When data needs to be signed or hashed, any variation in serialization — even between semantically equivalent representations — can produce different cryptographic results. This undermines the reliability of verification processes and introduces additional considerations during system design at best, or security vulnerabilities at worst.
-
-Without deterministic serialization, systems face a burdensome choice: either store both the original serialized bytes alongside the deserialized data structures (doubling storage requirements and creating synchronization challenges), or risk the inability to verify previously signed data. This challenge becomes particularly acute in distributed systems where multiple parties need to independently verify signatures without access to the original serialized form.
-
-Canonicalization solves this problem by ensuring that all participants, regardless of their implementation details, produce identical byte representations for identical data. This property allows cryptographic operations to be reliably repeatable across different implementations and environments.
-
-The ability to have a single, deterministic binary representation for each unique data structure eliminates an entire class of potential inconsistencies and security issues. It means that verifiers can independently reconstruct the exact byte sequence that was signed, without needing to preserve the original serialization alongside the semantic content.
-
-Cord's approach creates a foundation where cryptographic operations and data serialization work together seamlessly, rather than requiring complex workarounds to reconcile their different requirements.
-
-## 💾 Installation
-
-Cord is hosted on [crates.io](https://crates.io/crates/cord). You can add cord to your Rust project by running the `cargo` command below or by adding it to your `Cargo.toml`.
+## Installation
 
 ```bash
 cargo add cord
 ```
 
-## 📇 Basic Usage
+## Quick Start
+
+Any type that derives `Cord` just works:
 
 ```rust
-use cord::{serialize, deserialize};
-use serde::{Serialize, Deserialize};
+use cord::{serialize, deserialize, Cord};
 
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Cord, Debug, PartialEq)]
 struct User {
     id: u32,
     name: String,
     active: bool,
 }
 
-// Instantiate and serialize a struct
 let user = User {
     id: 42,
     name: "Alice".to_string(),
     active: true,
 };
-let bytes = serialize(&user).unwrap();
 
-// Deserialize
+let bytes = serialize(&user).unwrap();
 let deserialized: User = deserialize(&bytes).unwrap();
 assert_eq!(user, deserialized);
 ```
 
-## 🧩 Supported Types
+`#[derive(Cord)]` generates both `Serialize` and `Deserialize` implementations. Types that already derive `serde::Serialize` and `serde::Deserialize` also work — `#[derive(Cord)]` is only needed when using Cord-specific field attributes.
 
-Cord intentionally limits its supported types to those that can be canonically represented:
+Cord supports booleans, integers (i8–i128, u8–u128), floats (f32, f64), strings, byte arrays, options, sequences, structs, tuple structs, and enums out of the box.
 
-| Type                              | Support | Notes                                                   |
-| --------------------------------- | ------- | ------------------------------------------------------- |
-| Boolean                           | ✅      |                                                         |
-| Integers (i8, u8, i16, u16, etc.) | ✅      | Uses varint encoding                                    |
-| Strings                           | ✅      | UTF-8 with length prefix                                |
-| Byte arrays                       | ✅      | With length prefix                                      |
-| Fixed-size sequences              | ✅      |                                                         |
-| Options                           | ✅      |                                                         |
-| Struct/Tuple struct               | ✅      |                                                         |
-| Enums                             | ✅      |                                                         |
-| Custom Set                        | ✅      | Canonically ordered                                     |
-| Custom DateTime                   | ✅      | UTC timestamp representation                            |
-| Maps                              | ✅      | Canonically ordered by key                              |
-| Floating point                    | ❌      | Intentionally excluded due to NaN/representation issues |
+## Beyond the Basics
 
-## ☢️ Threat Model
+Beyond primitive types and structs, Cord provides `DateTime`, `Map`, `Set`, `Decimal`, and `Uuid` — use them directly as field types, no annotations needed. Enums, options, and `Vec<u8>` all work out of the box.
 
-Cord is designed to defend against scenarios where attackers exploit ambiguities in data representation to bypass security controls, particularly in cryptographic contexts. Examples of addressed threat vectors include:
+```rust
+use cord::{serialize, deserialize, Cord, DateTime, Decimal, Map, Set, Uuid};
+use std::collections::{HashMap, HashSet};
+
+#[derive(Cord, Debug, PartialEq)]
+enum AccessLevel {
+    Public,
+    Restricted(Vec<String>),
+}
+
+#[derive(Cord, Debug, PartialEq)]
+struct Document {
+    title: String,
+    access: AccessLevel,
+    created: DateTime,             // Nanosecond-precision UTC timestamp
+    tags: Set<String>,             // Serialized in sorted order
+    attributes: Map<String, String>, // Serialized sorted by key
+    description: Option<String>,
+    id: Uuid,                      // 16-byte canonical UUID
+    price: Decimal,                // Arbitrary-precision decimal
+}
+
+let mut tags = HashSet::new();
+tags.insert("important".to_string());
+tags.insert("draft".to_string());
+
+let mut attributes = HashMap::new();
+attributes.insert("priority".to_string(), "high".to_string());
+attributes.insert("version".to_string(), "2.0".to_string());
+
+let doc = Document {
+    title: "Design Doc".to_string(),
+    access: AccessLevel::Restricted(vec!["alice".into(), "bob".into()]),
+    created: DateTime::now(),
+    tags: Set::from(tags),
+    attributes: Map::from(attributes),
+    description: None,
+    id: Uuid::from(uuid::Uuid::nil()),
+    price: Decimal::from_i64(1999, 2), // 19.99
+};
+
+let bytes = serialize(&doc).unwrap();
+let decoded: Document = deserialize(&bytes).unwrap();
+assert_eq!(doc, decoded);
+```
+
+## Forward Evolution
+
+When different parts of a system run different versions of the same schema, you need a way to handle unknown data without losing it. `Evolving<T>` length-prefixes the serialized payload so that if deserialization of the inner type fails (e.g., an unknown enum variant), the raw bytes are preserved and can be round-tripped without data loss:
+
+```rust
+use cord::{serialize, deserialize, Cord, Evolving};
+
+#[derive(Cord, Debug, PartialEq)]
+enum Status {
+    Active,
+    Inactive,
+    // Future versions may add more variants
+}
+
+#[derive(Cord, Debug, PartialEq)]
+struct Message {
+    id: u32,
+    status: Evolving<Status>,
+}
+
+let msg = Message {
+    id: 1,
+    status: Evolving::new(Status::Active),
+};
+
+let bytes = serialize(&msg).unwrap();
+let decoded: Message = deserialize(&bytes).unwrap();
+
+// Known values are accessible
+assert!(decoded.status.is_known());
+assert_eq!(decoded.status.known(), Some(&Status::Active));
+```
+
+If a newer version adds `Status::Pending` and serializes it, older code will deserialize it as `Evolving::Unknown(bytes)` — and re-serializing produces identical bytes.
+
+The `#[cord(evolving = N)]` attribute controls the width of the length prefix used for the envelope:
+
+| Attribute              | Payload Length Prefix | Max Payload Size |
+| ---------------------- | --------------------- | ---------------- |
+| `#[cord(evolving = 8)]`  | u8                 | 255 bytes        |
+| `#[cord(evolving = 16)]` | u16                | 65,535 bytes     |
+| `#[cord(evolving = 32)]` | u32 (default)      | ~4 GiB           |
+
+```rust
+#[derive(Cord, Debug, PartialEq)]
+struct CompactMessage {
+    id: u32,
+    #[cord(evolving = 8)]
+    status: Evolving<Status>,  // 1-byte length prefix instead of 4
+}
+```
+
+Without the attribute, `Evolving<T>` defaults to a 32-bit length prefix.
+
+## Dynamic Schemas
+
+For use cases where the data structure isn't known at compile time, Cord provides a dynamic path with runtime schemas. Schemas are themselves serializable Cord types, so you get schema hashing, compact binary representation, and schema-as-data for free.
+
+### Defining a Schema
+
+```rust
+use cord::Schema;
+
+let user_schema = Schema::Struct(vec![
+    ("name".into(), Schema::string()),
+    ("age".into(), Schema::U32),
+    ("active".into(), Schema::Bool),
+]);
+```
+
+Schemas support the full range of Cord types via convenience constructors:
+
+```rust
+use cord::Schema;
+
+let schema = Schema::Struct(vec![
+    ("id".into(), Schema::varint(Schema::U32)),
+    ("tags".into(), Schema::set(Schema::string())),
+    ("metadata".into(), Schema::map(Schema::string(), Schema::string())),
+    ("nickname".into(), Schema::option(Schema::string())),
+]);
+```
+
+### Encoding and Decoding
+
+Use `cord::dynamic::encode` and `cord::dynamic::decode` when both sides agree on the schema:
+
+```rust
+use cord::{Schema, Value};
+use cord::dynamic;
+
+let schema = Schema::Struct(vec![
+    ("name".into(), Schema::string()),
+    ("age".into(), Schema::U32),
+]);
+
+let value = Value::Struct(vec![
+    ("name".into(), Value::String("Alice".into())),
+    ("age".into(), Value::U32(30)),
+]);
+
+// Encode to bytes — produces the same output as the serde path
+let bytes = dynamic::encode(&value, &schema).unwrap();
+
+// Decode back
+let decoded = dynamic::decode(&schema, &bytes).unwrap();
+assert_eq!(decoded, value);
+```
+
+### Cross-Path Compatibility
+
+The dynamic path produces identical bytes to the serde path, so you can freely mix them:
+
+```rust
+use cord::{serialize, deserialize, Cord, Schema, Value};
+use cord::dynamic;
+
+#[derive(Cord, Debug, PartialEq)]
+struct User {
+    name: String,
+    age: u32,
+}
+
+let schema = Schema::Struct(vec![
+    ("name".into(), Schema::string()),
+    ("age".into(), Schema::U32),
+]);
+
+// Serialize with serde, decode dynamically
+let user = User { name: "Alice".into(), age: 30 };
+let serde_bytes = serialize(&user).unwrap();
+let dynamic_val = dynamic::decode(&schema, &serde_bytes).unwrap();
+
+// Encode dynamically, deserialize with serde
+let dynamic_bytes = dynamic::encode(&dynamic_val, &schema).unwrap();
+assert_eq!(serde_bytes, dynamic_bytes);
+let decoded_user: User = deserialize(&dynamic_bytes).unwrap();
+assert_eq!(decoded_user, user);
+```
+
+### Hashing
+
+Since Cord guarantees deterministic serialization, you can compute canonical hashes of any serializable value — schemas, typed structs, dynamic values, or anything else. Enable the `hash` feature for built-in SHA3-256 hashing:
+
+```bash
+cargo add cord --features hash
+```
+
+```rust
+use cord::{hash, Cord};
+
+#[derive(Cord)]
+struct User {
+    name: String,
+    age: u32,
+}
+
+let user = User { name: "Alice".into(), age: 30 };
+
+// Compute a canonical SHA3-256 hash
+let h: [u8; 32] = hash(&user).unwrap();
+
+// Same value always produces the same hash, regardless of when or where
+let h2: [u8; 32] = hash(&user).unwrap();
+assert_eq!(h, h2);
+```
+
+Or bring your own hash — Cord's deterministic encoding means `serialize(value)` always produces the same bytes for the same value:
+
+```rust
+use cord::{serialize, Cord};
+
+#[derive(Cord)]
+struct User {
+    name: String,
+    age: u32,
+}
+
+let user = User { name: "Alice".into(), age: 30 };
+let bytes = serialize(&user).unwrap();
+// Hash bytes with any algorithm you prefer
+```
+
+## Dynamic Values
+
+Build dynamic values with JSON-like syntax using the `cord_value!` macro:
+
+```rust
+use cord::{cord_value, to_value, from_value, Cord, Value};
+
+#[derive(Cord, Debug, PartialEq)]
+struct User {
+    name: String,
+    age: u32,
+    active: bool,
+}
+
+// Build a Value with JSON-like syntax
+let value = cord_value!({
+    "name": "Alice",
+    "age": 30_u32,
+    "tags": ["admin", "user"],
+    "active": true,
+});
+
+// Convert a Value to a typed struct with from_value
+let user_value = cord_value!({
+    "name": "Alice",
+    "age": 30_u32,
+    "active": true,
+});
+let user: User = from_value(&user_value).unwrap();
+assert_eq!(user.name, "Alice");
+
+// Go the other direction: typed struct → Value
+let value2 = to_value(&user).unwrap();
+assert_eq!(user_value, value2);
+
+// Pattern match to inspect fields directly
+if let Value::Struct(fields) = &user_value {
+    let (name, val) = &fields[0];
+    assert_eq!(name, "name");
+    assert_eq!(*val, Value::String("Alice".into()));
+}
+```
+
+Type mapping for `cord_value!`:
+- `{ "key": value, ... }` becomes `Value::Struct`
+- `[a, b, c]` becomes `Value::Seq`
+- String literals become `Value::String`
+- `true`/`false` become `Value::Bool`
+- Integer literals use Rust's type inference — unsuffixed integers default to `i32`, use suffixes like `30_u32` or `7_u8` for explicit types
+- Parenthesized expressions `(expr)` allow embedding variables and function calls
+
+## Tuning the Wire Format
+
+By default, Cord uses fixed-width big-endian encoding for integers, 32-bit (u32) length prefixes for sequences/strings/bytes, and 32-bit (u32) variant indices for enums. This makes the format predictable and easy to implement across languages.
+
+For size-sensitive protocols, Cord provides field attributes to control encoding width. These require `#[derive(Cord)]` on the containing type.
+
+### Variable-Length Integers
+
+Use `#[cord(varint)]` for compact variable-length encoding (LEB128 for unsigned, zigzag + LEB128 for signed). Works with all integer types from `u8` to `u128`:
+
+```rust
+use cord::Cord;
+
+#[derive(Cord, Debug, PartialEq)]
+struct Compact {
+    #[cord(varint)]
+    small_value: u32,       // 1 byte for values < 128
+    large_value: u32,       // Always 4 bytes
+    #[cord(varint)]
+    big_id: u128,           // Variable-length 128-bit support
+}
+```
+
+### Width
+
+Control the width of length prefixes (strings, byte arrays, sequences) and variant indices (enums) with `#[cord(width = N)]`. The attribute applies to whichever is relevant for the field type:
+
+| Attribute             | Wire Width | Applies To                                  |
+| --------------------- | ---------- | ------------------------------------------- |
+| `#[cord(width = 8)]`  | u8 (1B)   | Length prefix or variant index               |
+| `#[cord(width = 16)]` | u16 (2B)  | Length prefix or variant index               |
+| `#[cord(width = 64)]` | u64 (8B)  | Length prefix or variant index               |
+
+### Custom Variant Indices
+
+Use `#[cord(index = N)]` on enum variants to assign explicit wire indices:
+
+```rust
+use cord::Cord;
+
+#[derive(Cord, Debug, PartialEq)]
+enum Command {
+    #[cord(index = 1)]
+    Ping,
+    #[cord(index = 5)]
+    Pong(u32),
+    #[cord(index = 100)]
+    Reset,
+}
+```
+
+If any variant has `#[cord(index)]`, all variants must have it.
+
+### Combining Attributes
+
+```rust
+use cord::Cord;
+
+#[derive(Cord, Debug, PartialEq)]
+struct Packet {
+    #[cord(width = 8)]
+    kind: Status,           // 1-byte variant index instead of 4
+    #[cord(width = 8)]
+    name: String,           // 1-byte length prefix instead of 4
+    #[cord(varint)]
+    sequence: u64,          // Variable-length encoding
+    fixed: u32,             // Standard 4-byte encoding
+}
+```
+
+## Deterministic Serialization
+
+Cord guarantees that every unique value has exactly one binary representation. This is a property of the format itself — sorted collections, NFC-normalized strings, fixed-width or minimal-length encodings — not something you opt into.
+
+This matters most when serialized bytes are inputs to cryptographic operations. If you sign or hash a data structure and later need to re-serialize it to verify the signature, you need identical bytes. Most formats can't promise that — key order in maps, variable-length integer encodings, and Unicode normalization differences can all silently produce different output for the same logical value.
+
+With Cord, any implementation that follows the spec will produce the same bytes for the same data. You can serialize, deserialize, re-serialize, and the output is always identical. This makes it straightforward to use with signing, hashing, content-addressing, caching, and deduplication.
+
+## Threat Model
+
+Cord is designed to defend against scenarios where attackers exploit ambiguities in data representation to bypass security controls, particularly in cryptographic contexts:
 
 1. **Canonicalization bypass**: Cryptographic systems often verify signatures against a normalized form while operating on raw input. Attackers exploit this gap by crafting inputs with trailing data, comment fields, or flexible encodings that bypass verification but execute differently. Classic examples include XML signature wrapping attacks and JWT header manipulation.
 2. **Protocol confusion**: When data is parsed differently across system boundaries, attackers can craft inputs that pass one subsystem's verifications and authorize malicious actions in downstream systems, effectively amounting to a payload substitution attack.
-3. **Inconsistency**: When third parties cannot independently reproduce the exact byte sequence of cryptographically authenticated data, verification becomes dependent on trusting the original signer's environment. In distributed verification systems like blockchains or certificate transparency logs, this can lead to novel failure modes such as consensus failures or validation errors.
+3. **Inconsistency**: When third parties cannot independently reproduce the exact byte sequence of cryptographically authenticated data, verification becomes dependent on trusting the original signer's environment. In distributed verification systems like blockchains or certificate transparency logs, this can lead to consensus failures or validation errors.
 
 Cord does **not** protect against:
 
@@ -89,78 +425,73 @@ Cord does **not** protect against:
 - Malicious inputs exceeding reasonable size limits
 - Implementation flaws in cryptographic primitives used with Cord outputs
 
-## 🛰️ Advanced Example: Sets, Enums, and Custom Types
+## Unicode Normalization
+
+Cord enforces NFC (Canonical Decomposition followed by Canonical Composition) normalization for all strings. Strings are automatically normalized to NFC during serialization, and the deserializer rejects non-NFC strings. This prevents equivalent Unicode sequences (e.g., `e` as a single code point vs. `e` + combining acute accent) from producing different binary representations.
+
+## Depth Limiting
+
+The deserializer enforces a maximum nesting depth to protect against stack overflows from deeply nested or malicious input. Both the serde and dynamic decoding paths track depth and return `CordError::DepthLimitExceeded` if the limit is exceeded. The default limit is 128, available as `cord::DEFAULT_MAX_DEPTH`.
 
 ```rust
-use cord::{serialize, deserialize, Set, Map};
-use serde::{Serialize, Deserialize};
-use std::collections::HashSet;
+use cord::deserialize;
 
-// Custom type for document metadata
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
-struct Metadata {
-    created_at: u64,
-    author: String,
-}
+// Deeply nested options: Some(Some(Some(... None ...)))
+// A 200-level nesting will be rejected at depth 128
+let mut bytes = vec![0x01; 200]; // 200 layers of Some(...)
+bytes.push(0x00);                // innermost None
 
-// Enum with different variants
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
-enum AccessLevel {
-    Public,
-    Restricted(Vec<String>),
-}
-
-// Document type using a custom type, enum, set, and map
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
-struct Document {
-    id: u32,
-    metadata: Metadata,
-    tags: Set<String>,
-    access: AccessLevel,
-    attributes: Map<String, String>,
-}
-
-fn main() {
-    // Prepare a document to serialize
-    let mut tags = HashSet::new();
-    tags.insert("important".to_string());
-    tags.insert("draft".to_string());
-
-    let mut attributes = std::collections::HashMap::new();
-    attributes.insert("priority".to_string(), "high".to_string());
-    attributes.insert("version".to_string(), "1.1.0".to_string());
-
-    let doc = Document {
-        id: 42,
-        metadata: Metadata {
-            created_at: 1577836800,
-            author: "Alice".to_string(),
-        },
-        tags: Set::from(tags),
-        access: AccessLevel::Restricted(vec!["alice".to_string(), "bob".to_string()]),
-        attributes: Map::from(attributes),
-    };
-
-    // Serialize and deserialize
-    let serialized = serialize(&doc).unwrap();
-    let deserialized: Document = deserialize(&serialized).unwrap();
-
-    // Sets and Maps are preserved but their internal representation is canonicalized
-    assert_eq!(doc, deserialized);
-}
+let result: Result<_, _> = deserialize::<Option<Option<Option<u8>>>>(&bytes);
+// Fails with CordError::DepthLimitExceeded
 ```
 
-## 🚧 Limitations and Trade-offs
+## Feature Flags
 
-Cord makes deliberate trade-offs to achieve its security properties:
+| Feature       | Default | Description                                      |
+| ------------- | ------- | ------------------------------------------------ |
+| `hash`        | off     | Adds `cord::hash()` (SHA3-256 hashing)            |
 
-1. **Backward compatibility**: The serialization format may subtly change between major versions
-2. **Limited type support**: Complex types like floats are excluded to maintain determinism
-3. **Performance cost**: Canonicalization introduces overhead compared to formats like FlatBuffers
-4. **Additive schema evolution**: Fields cannot be removed once added without breaking compatibility
-5. **No self-description**: Unlike formats like JSON, binary output is not human-readable and may have multiple interpretations under different schemas
+## Supported Types Reference
 
-## 📊 Current Status
+| Type                              | Support | Notes                                                              |
+| --------------------------------- | ------- | ------------------------------------------------------------------ |
+| Boolean                           | yes     |                                                                    |
+| Integers (i8–i128, u8–u128)       | yes     | Fixed-width big-endian encoding (default)                          |
+| Integers (varints)                | yes     | Opt-in variable-length encoding (LEB128/zigzag)                    |
+| Floats (f32, f64)                 | yes     | Big-endian IEEE 754; NaN rejected, −0 canonicalized to +0          |
+| Char                              | yes     | UTF-8, NFC-normalized, with length prefix                          |
+| Strings                           | yes     | UTF-8, NFC-normalized, with length prefix (u32 default)            |
+| Byte arrays                       | yes     | With length prefix (u32 default)                                   |
+| Sequences                         | yes     | With length prefix (u32 default)                                   |
+| Options                           | yes     |                                                                    |
+| Struct/Tuple struct               | yes     |                                                                    |
+| Enums                             | yes     | Variant index u32 default                                          |
+| Evolving                          | yes     | Forward-compatible enum wrapper with length-prefixed payload       |
+| Set                               | yes     | Sorted during serialization                                        |
+| Map                               | yes     | Sorted by key during serialization                                 |
+| DateTime                          | yes     | Nanosecond-precision UTC timestamp (seconds + nanos)               |
+| Decimal                           | yes     | Arbitrary-precision decimal (u8 scale + two's complement unscaled) |
+| Uuid                              | yes     | 16-byte canonical UUID                                             |
+
+## Limitations and Trade-offs
+
+1. **Not human-readable**: Binary output requires tooling to inspect
+2. **Additive schema evolution**: Fields cannot be removed once added without breaking compatibility
+3. **Wire format versioning**: The format may change between major versions (v1 and v2 are not wire-compatible)
+
+## Performance
+
+Cord v2 uses fixed-width big-endian encoding by default (16 bytes for 128-bit integers), which is fast to encode and decode. For size-sensitive applications, `#[cord(varint)]` and `#[cord(width = N)]` trade some speed for smaller output. Sets and Maps incur a sort during serialization.
+
+```bash
+cargo bench --bench performance
+```
+
+## Migrating from v1
+
+Cord v2 is a **breaking change** — the wire format is not compatible with v1. Data serialized with v1 cannot be deserialized with v2, and vice versa. If you have persisted v1 data, you will need to migrate it (deserialize with v1, re-serialize with v2).
+
+## Current Status
 
 Cord is a mature project that has seen production use in [Backbone](https://backbone.dev). Nevertheless, we urge users to:
 
@@ -168,19 +499,7 @@ Cord is a mature project that has seen production use in [Backbone](https://back
 - Be prepared for breaking changes in major versions
 - Consider serialization format lock-in for long-term data storage
 
-## ⏱️ Performance
-
-Cord is designed for security and determinism, which introduces some overhead compared to non-canonical formats. However, it remains highly efficient for most use cases.
-
-To run the benchmarking suite locally:
-
-```bash
-cargo bench --bench performance
-```
-
-While Cord is marginally slower than non-canonical formats like `bincode` due to varint encoding and deterministic sorting of sets/maps, it provides the cryptographic guarantees necessary for security-sensitive applications without compromising overall system performance.
-
-## 🗺️ Roadmap
+## Roadmap
 
 Our current priorities are:
 
@@ -193,4 +512,4 @@ Anything else you'd like to see? [Suggest a feature](https://github.com/backbone
 
 ---
 
-Built with ❤️ by [Backbone](https://backbone.dev)
+Built by [Backbone](https://backbone.dev)
