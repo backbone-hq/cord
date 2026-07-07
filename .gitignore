@@ -1,2 +1,5 @@
 target/
 public/
+.pi/
+Cargo.lock
+cord-derive/Cargo.lock

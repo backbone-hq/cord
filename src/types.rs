@@ -8,21 +8,11 @@ use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 #[cfg(any(feature = "datetime", feature = "decimal", feature = "uuid"))]
 use std::str::FromStr;
-
-/// Forward-compatible enum wrapper.
-///
-/// When deserializing an enum, if the variant index is unknown (e.g., the
-/// sender has a newer schema with additional variants), the raw payload bytes
-/// are preserved in the `Unknown` variant so they can be round-tripped.
-///
-/// The width of the length prefix used for the envelope is controlled by the
-/// `#[cord(evolving = N)]` field attribute (8, 16, or 32 bits). The default
-/// when used standalone (without the derive macro) is 32 bits.
+/// Forward-compatible enum wrapper — unknown variant raw bytes are
+/// preserved for round-tripping.
 #[derive(Debug, Clone)]
 pub enum Evolving<T> {
-    /// Successfully deserialized as a known variant.
     Known(T),
-    /// Unknown variant — raw bytes preserved for round-tripping.
     Unknown(Vec<u8>),
 }
 
@@ -135,11 +125,7 @@ impl From<&Bytes> for Vec<u8> {
     }
 }
 
-/// A set type that guarantees canonical serialization.
-///
-/// Backed by a `HashSet` for O(1) lookups and insertions. Canonical ordering
-/// is established at serialization time by sorting elements by their serialized
-/// byte representation — the in-memory iteration order is irrelevant.
+/// A set with canonical (sorted) serialization.
 #[derive(Debug, Clone)]
 pub struct Set<T> {
     inner: HashSet<T>,
@@ -314,11 +300,7 @@ impl From<chrono::DateTime<chrono::Utc>> for DateTime {
     }
 }
 
-/// A map type that guarantees canonical serialization.
-///
-/// Backed by a `HashMap` for O(1) lookups and insertions. Canonical ordering
-/// is established at serialization time by sorting entries by their serialized
-/// key bytes — the in-memory iteration order is irrelevant.
+/// A map with canonical (key-sorted) serialization.
 #[derive(Debug, Clone)]
 pub struct Map<K, V> {
     inner: HashMap<K, V>,
@@ -464,18 +446,11 @@ where
 
 /// Arbitrary-precision decimal number.
 ///
-/// Represented internally as `unscaled * 10^(-scale)` where `unscaled` is a
-/// [`BigInt`] and `scale` is a `u8`. The value is always stored in canonical
-/// (normalized) form: trailing zeros in the unscaled value are stripped and the
-/// scale adjusted accordingly. Zero is canonicalized to `(0, scale=0)`.
-///
 /// Wire format: `(u8 scale, Bytes two's-complement big-endian unscaled)`.
 #[cfg(feature = "decimal")]
 #[derive(Debug, Clone, Eq)]
 pub struct Decimal {
-    /// The unscaled integer value (two's complement).
     pub(crate) unscaled: BigInt,
-    /// Number of digits after the decimal point (max 255).
     pub(crate) scale: u8,
 }
 
@@ -585,9 +560,7 @@ impl FromStr for Decimal {
     }
 }
 
-/// Wrapper around [`uuid::Uuid`] for canonical serialization.
-///
-/// Serialized as exactly 16 raw bytes in big-endian order.
+/// Canonical serialization wrapper for [`uuid::Uuid`].
 #[cfg(feature = "uuid")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Uuid {
@@ -654,65 +627,5 @@ impl From<Uuid> for uuid::Uuid {
     }
 }
 
-// ---------------------------------------------------------------------------
-// CordSchema / CordEncode / CordDecode impls for custom types
-// ---------------------------------------------------------------------------
-
-impl<T: crate::schema::CordSchema> crate::schema::CordSchema for Evolving<T> {
-    fn schema() -> crate::schema::Schema {
-        crate::schema::Schema::Evolving(Box::new(T::schema()), crate::schema::Width::default())
-    }
-}
-
-impl<T: crate::encode::CordEncode> crate::encode::CordEncode for Evolving<T> {
-    fn encode_cord(&self, buf: &mut Vec<u8>) -> crate::CordResult<()> {
-        crate::private::encode_evolving(buf, self, crate::schema::Width::W32)
-    }
-}
-
-impl<T: crate::encode::CordDecode> crate::encode::CordDecode for Evolving<T> {
-    fn decode_cord(input: &mut &[u8]) -> crate::CordResult<Self> {
-        crate::private::decode_evolving::<T>(input, crate::schema::Width::W32)
-    }
-}
-
-impl crate::schema::CordSchema for Bytes {
-    fn schema() -> crate::schema::Schema {
-        crate::schema::Schema::bytes()
-    }
-}
-
-impl<T: crate::schema::CordSchema + Hash + Eq> crate::schema::CordSchema for Set<T> {
-    fn schema() -> crate::schema::Schema {
-        crate::schema::Schema::set(T::schema())
-    }
-}
-
-impl<K: crate::schema::CordSchema + Hash + Eq, V: crate::schema::CordSchema>
-    crate::schema::CordSchema for Map<K, V>
-{
-    fn schema() -> crate::schema::Schema {
-        crate::schema::Schema::map(K::schema(), V::schema())
-    }
-}
-
-#[cfg(feature = "datetime")]
-impl crate::schema::CordSchema for DateTime {
-    fn schema() -> crate::schema::Schema {
-        crate::schema::Schema::DateTime
-    }
-}
-
-#[cfg(feature = "decimal")]
-impl crate::schema::CordSchema for Decimal {
-    fn schema() -> crate::schema::Schema {
-        crate::schema::Schema::decimal()
-    }
-}
-
-#[cfg(feature = "uuid")]
-impl crate::schema::CordSchema for Uuid {
-    fn schema() -> crate::schema::Schema {
-        crate::schema::Schema::Uuid
-    }
-}
+// Set<T>: Eq requires only T: Eq + Hash (HashSet<T> provides this unconditionally).
+impl<T: Eq + Hash> Eq for Set<T> {}

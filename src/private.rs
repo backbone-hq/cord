@@ -4,13 +4,11 @@
 //! may change at any time. Do not depend on it directly.
 
 use crate::de::CordDeserializer;
-use crate::result::CordError;
-use crate::Evolving;
+use crate::{CordError, Evolving, Width};
 use serde::de;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt::Formatter;
 use std::marker::PhantomData;
-
 // ---------------------------------------------------------------------------
 // Sentinel constants — single source of truth for all encoding hint names
 // ---------------------------------------------------------------------------
@@ -34,43 +32,33 @@ pub(crate) const SENTINEL_EVOLVING16_RAW: &str = "__cord_evolving16_raw";
 pub(crate) const SENTINEL_EVOLVING32_RAW: &str = "__cord_evolving32_raw";
 
 // ---------------------------------------------------------------------------
-// EncodingHint — replaces ad-hoc varint_mode + width state
+// EncodingHint
 // ---------------------------------------------------------------------------
 
-/// Encoding mode set by sentinel newtype wrappers.
-/// Replaces the ad-hoc `varint_mode: bool` + `width: Option<u8>` state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EncodingHint {
-    /// Default: no special encoding
     Default,
-    /// Use varint encoding for the next integer
     VarInt,
-    /// Use 1-byte length prefix
     Width8,
-    /// Use 2-byte length prefix
     Width16,
-    /// Use 8-byte length prefix
     Width64,
 }
 
 impl EncodingHint {
-    /// Returns the width for length-prefix hints, or the default (W32).
-    pub(crate) fn width(self) -> crate::schema::Width {
+    pub(crate) fn width(self) -> Width {
         match self {
-            EncodingHint::Width8 => crate::schema::Width::W8,
-            EncodingHint::Width16 => crate::schema::Width::W16,
-            EncodingHint::Width64 => crate::schema::Width::W64,
-            _ => crate::schema::Width::W32,
+            EncodingHint::Width8 => Width::W8,
+            EncodingHint::Width16 => Width::W16,
+            EncodingHint::Width64 => Width::W64,
+            _ => Width::W32,
         }
     }
 
-    /// Returns true if this hint is not the default.
     pub(crate) fn is_active(self) -> bool {
         self != EncodingHint::Default
     }
 }
 
-/// Map a sentinel name to an encoding hint (for width/varint sentinels only).
 pub(crate) fn sentinel_to_hint(name: &str) -> Option<EncodingHint> {
     match name {
         SENTINEL_VARINT => Some(EncodingHint::VarInt),
@@ -81,62 +69,11 @@ pub(crate) fn sentinel_to_hint(name: &str) -> Option<EncodingHint> {
     }
 }
 
-/// Returns true if the given name is any known cord sentinel.
-pub(crate) fn is_sentinel(name: &str) -> bool {
-    if matches!(
-        name,
-        SENTINEL_VARINT
-            | SENTINEL_WIDTH8
-            | SENTINEL_WIDTH16
-            | SENTINEL_WIDTH64
-            | SENTINEL_SET
-            | SENTINEL_EVOLVING8
-            | SENTINEL_EVOLVING16
-            | SENTINEL_EVOLVING32
-            | SENTINEL_EVOLVING8_RAW
-            | SENTINEL_EVOLVING16_RAW
-            | SENTINEL_EVOLVING32_RAW
-    ) {
-        return true;
-    }
-    #[cfg(feature = "datetime")]
-    if name == SENTINEL_DATETIME {
-        return true;
-    }
-    #[cfg(feature = "decimal")]
-    if name == SENTINEL_DECIMAL {
-        return true;
-    }
-    #[cfg(feature = "uuid")]
-    if name == SENTINEL_UUID {
-        return true;
-    }
-    false
-}
-
-/// Returns true if the name is an evolving sentinel (known variant).
-pub(crate) fn is_evolving_known(name: &str) -> bool {
-    matches!(
-        name,
-        SENTINEL_EVOLVING8 | SENTINEL_EVOLVING16 | SENTINEL_EVOLVING32
-    )
-}
-
-/// Returns true if the name is an evolving raw sentinel (unknown variant).
-pub(crate) fn is_evolving_raw(name: &str) -> bool {
-    matches!(
-        name,
-        SENTINEL_EVOLVING8_RAW | SENTINEL_EVOLVING16_RAW | SENTINEL_EVOLVING32_RAW
-    )
-}
-
-/// Map an evolving sentinel name to its wire width.
-/// Returns `None` if the name is not an evolving sentinel.
-pub(crate) fn evolving_width(name: &str) -> Option<crate::schema::Width> {
+pub(crate) fn evolving_width(name: &str) -> Option<Width> {
     match name {
-        SENTINEL_EVOLVING8 | SENTINEL_EVOLVING8_RAW => Some(crate::schema::Width::W8),
-        SENTINEL_EVOLVING16 | SENTINEL_EVOLVING16_RAW => Some(crate::schema::Width::W16),
-        SENTINEL_EVOLVING32 | SENTINEL_EVOLVING32_RAW => Some(crate::schema::Width::W32),
+        SENTINEL_EVOLVING8 | SENTINEL_EVOLVING8_RAW => Some(Width::W8),
+        SENTINEL_EVOLVING16 | SENTINEL_EVOLVING16_RAW => Some(Width::W16),
+        SENTINEL_EVOLVING32 | SENTINEL_EVOLVING32_RAW => Some(Width::W32),
         _ => None,
     }
 }
@@ -275,7 +212,6 @@ evolving_ser_wrapper!(Evolving32Ser, SENTINEL_EVOLVING32, SENTINEL_EVOLVING32_RA
 macro_rules! evolving_de_wrapper {
     ($name:ident, $sentinel:expr, $visitor:ident) => {
         /// Deserialization wrapper that produces `Evolving<T>`.
-        /// The `.0` field is the deserialized `Evolving<T>`.
         pub struct $name<T>(pub Evolving<T>);
 
         struct $visitor<T> {
@@ -340,88 +276,3 @@ evolving_de_wrapper!(Evolving32De, SENTINEL_EVOLVING32, Evolving32DeVisitor);
 
 // ---------------------------------------------------------------------------
 // CordEncode/CordDecode helpers for derive macro
-// ---------------------------------------------------------------------------
-
-/// Encode a value using varint encoding.
-pub fn encode_varint<T: crate::varint::VarIntEncoding>(
-    buf: &mut Vec<u8>,
-    v: T,
-) -> crate::CordResult<()> {
-    crate::wire::write_varint(buf, v);
-    Ok(())
-}
-
-/// Encode a CordEncode value with a specific width for length/variant prefix.
-pub fn encode_with_width<T: crate::encode::CordEncode>(
-    buf: &mut Vec<u8>,
-    v: &T,
-    width: crate::schema::Width,
-) -> crate::CordResult<()> {
-    v.encode_cord_with_width(buf, width)
-}
-
-/// Encode an Evolving wrapper with the given width.
-pub fn encode_evolving<T: crate::encode::CordEncode>(
-    buf: &mut Vec<u8>,
-    v: &crate::Evolving<T>,
-    width: crate::schema::Width,
-) -> crate::CordResult<()> {
-    match v {
-        crate::Evolving::Known(inner) => {
-            let mut payload = Vec::new();
-            inner.encode_cord(&mut payload)?;
-            crate::wire::write_length(buf, payload.len(), width)?;
-            buf.extend_from_slice(&payload);
-            Ok(())
-        }
-        crate::Evolving::Unknown(bytes) => {
-            crate::wire::write_length(buf, bytes.len(), width)?;
-            buf.extend_from_slice(bytes);
-            Ok(())
-        }
-    }
-}
-
-/// Decode a varint value.
-pub fn decode_varint<T: crate::varint::VarIntEncoding>(input: &mut &[u8]) -> crate::CordResult<T> {
-    crate::wire::read_varint(input)
-}
-
-/// Decode a CordDecode value with a specific width.
-pub fn decode_with_width<T: crate::encode::CordDecode>(
-    input: &mut &[u8],
-    width: crate::schema::Width,
-) -> crate::CordResult<T> {
-    T::decode_cord_with_width(input, width)
-}
-
-/// Decode an Evolving wrapper with the given width.
-pub fn decode_evolving<T: crate::encode::CordDecode>(
-    input: &mut &[u8],
-    width: crate::schema::Width,
-) -> crate::CordResult<crate::Evolving<T>> {
-    let len = crate::wire::read_length(input, width, crate::de::DEFAULT_MAX_LENGTH)?;
-    let payload = crate::wire::read_bytes(input, len)?;
-    let mut sub_input = payload;
-    match T::decode_cord(&mut sub_input) {
-        Ok(value) if sub_input.is_empty() => Ok(crate::Evolving::Known(value)),
-        _ => Ok(crate::Evolving::Unknown(payload.to_vec())),
-    }
-}
-
-/// Encode a variant index with the given width.
-pub fn encode_variant_index(
-    buf: &mut Vec<u8>,
-    idx: u32,
-    width: crate::schema::Width,
-) -> crate::CordResult<()> {
-    crate::wire::write_variant_index(buf, idx, width)
-}
-
-/// Decode a variant index with the given width.
-pub fn decode_variant_index(
-    input: &mut &[u8],
-    width: crate::schema::Width,
-) -> crate::CordResult<u32> {
-    crate::wire::read_variant_index(input, width)
-}

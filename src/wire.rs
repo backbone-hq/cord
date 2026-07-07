@@ -1,19 +1,17 @@
-//! Shared low-level encoding/decoding primitives used by both the serde path
-//! (`ser.rs`/`de.rs`) and the dynamic path (`dynamic.rs`).
+//! Shared low-level encoding/decoding primitives used by the serde path (`ser.rs`/`de.rs`)
+//! and the direct path (`encode.rs`).
 //!
 //! Every wire-format operation lives here so that the two paths cannot diverge.
 
 use crate::result::{CordError, CordResult};
-use crate::schema::Width;
 use crate::varint::VarIntEncoding;
-#[cfg(feature = "unicode")]
+use crate::Width;
 use unicode_normalization::UnicodeNormalization;
 
 // ---------------------------------------------------------------------------
 // Length prefix
 // ---------------------------------------------------------------------------
 
-/// Write a length value as a big-endian integer of the given `width`.
 pub(crate) fn write_length<W: ?Sized + std::io::Write>(
     output: &mut W,
     len: usize,
@@ -40,8 +38,6 @@ pub(crate) fn write_length<W: ?Sized + std::io::Write>(
     Ok(())
 }
 
-/// Read a length prefix of the given `width` from `input`.
-/// Returns an error if the decoded length exceeds `max_length`.
 pub(crate) fn read_length(input: &mut &[u8], width: Width, max_length: usize) -> CordResult<usize> {
     let len = match width {
         Width::W8 => {
@@ -72,7 +68,6 @@ pub(crate) fn read_length(input: &mut &[u8], width: Width, max_length: usize) ->
 // Variant index
 // ---------------------------------------------------------------------------
 
-/// Write a variant index as a big-endian integer of the given `width`.
 pub(crate) fn write_variant_index<W: ?Sized + std::io::Write>(
     output: &mut W,
     idx: u32,
@@ -97,7 +92,6 @@ pub(crate) fn write_variant_index<W: ?Sized + std::io::Write>(
     Ok(())
 }
 
-/// Read a variant index of the given `width` from `input`.
 pub(crate) fn read_variant_index(input: &mut &[u8], width: Width) -> CordResult<u32> {
     match width {
         Width::W8 => {
@@ -124,7 +118,6 @@ pub(crate) fn read_variant_index(input: &mut &[u8], width: Width) -> CordResult<
 // Raw byte reading
 // ---------------------------------------------------------------------------
 
-/// Read exactly `n` bytes from `input`, advancing the slice.
 pub(crate) fn read_bytes<'a>(input: &mut &'a [u8], n: usize) -> CordResult<&'a [u8]> {
     if input.len() < n {
         return Err(CordError::UnexpectedEof);
@@ -138,16 +131,6 @@ pub(crate) fn read_bytes<'a>(input: &mut &'a [u8], n: usize) -> CordResult<&'a [
 // Varint
 // ---------------------------------------------------------------------------
 
-/// Encode a varint value and append to `buf`.
-pub(crate) fn write_varint<T: VarIntEncoding>(buf: &mut Vec<u8>, v: T) {
-    // write_varint_to would return CordResult, but writing to Vec<u8> cannot fail.
-    // Keep this as a direct impl to avoid unwrapping an infallible result.
-    let mut tmp = [0u8; 19];
-    let size = v.encode_var(&mut tmp);
-    buf.extend_from_slice(&tmp[..size]);
-}
-
-/// Encode a varint value and write to a generic `Write` destination.
 pub(crate) fn write_varint_to<T: VarIntEncoding, W: ?Sized + std::io::Write>(
     output: &mut W,
     v: T,
@@ -158,7 +141,6 @@ pub(crate) fn write_varint_to<T: VarIntEncoding, W: ?Sized + std::io::Write>(
     Ok(())
 }
 
-/// Decode a varint from `input`, advancing the slice.
 pub(crate) fn read_varint<T: VarIntEncoding>(input: &mut &[u8]) -> CordResult<T> {
     let (value, size) = T::decode_var(input).ok_or(CordError::InvalidVarInt)?;
     if value.required_space() != size {
@@ -172,27 +154,14 @@ pub(crate) fn read_varint<T: VarIntEncoding>(input: &mut &[u8]) -> CordResult<T>
 // String encoding/decoding
 // ---------------------------------------------------------------------------
 
-/// NFC-normalize a string. Returns the original string (as owned) if it is
-/// already ASCII or NFC, otherwise returns the normalized form.
-///
-/// When the `unicode` feature is disabled, returns the string as-is.
 pub(crate) fn normalize_nfc(s: &str) -> std::borrow::Cow<'_, str> {
-    #[cfg(feature = "unicode")]
-    {
-        if s.is_ascii() || unicode_normalization::is_nfc(s) {
-            std::borrow::Cow::Borrowed(s)
-        } else {
-            std::borrow::Cow::Owned(s.nfc().collect())
-        }
-    }
-    #[cfg(not(feature = "unicode"))]
-    {
+    if s.is_ascii() || unicode_normalization::is_nfc(s) {
         std::borrow::Cow::Borrowed(s)
+    } else {
+        std::borrow::Cow::Owned(s.nfc().collect())
     }
 }
 
-/// Write a length-prefixed UTF-8 string to `buf`.
-/// When the `unicode` feature is enabled, the string is NFC-normalized first.
 pub(crate) fn write_str(buf: &mut Vec<u8>, s: &str, width: Width) -> CordResult<()> {
     let normalized = normalize_nfc(s);
     write_length(buf, normalized.len(), width)?;
@@ -200,8 +169,6 @@ pub(crate) fn write_str(buf: &mut Vec<u8>, s: &str, width: Width) -> CordResult<
     Ok(())
 }
 
-/// Read a length-prefixed UTF-8 string from `input`.
-/// When the `unicode` feature is enabled, validates NFC normalization.
 pub(crate) fn read_str<'a>(
     input: &mut &'a [u8],
     width: Width,
@@ -210,7 +177,6 @@ pub(crate) fn read_str<'a>(
     let len = read_length(input, width, max_length)?;
     let b = read_bytes(input, len)?;
     let s = std::str::from_utf8(b).map_err(|_| CordError::InvalidUtf8)?;
-    #[cfg(feature = "unicode")]
     if !s.is_ascii() && !unicode_normalization::is_nfc(s) {
         return Err(CordError::NotNfcNormalized);
     }
@@ -221,14 +187,12 @@ pub(crate) fn read_str<'a>(
 // Bytes encoding/decoding
 // ---------------------------------------------------------------------------
 
-/// Write length-prefixed raw bytes to `buf`.
 pub(crate) fn write_bytes(buf: &mut Vec<u8>, data: &[u8], width: Width) -> CordResult<()> {
     write_length(buf, data.len(), width)?;
     buf.extend_from_slice(data);
     Ok(())
 }
 
-/// Read length-prefixed raw bytes from `input`.
 pub(crate) fn read_bytes_prefixed<'a>(
     input: &mut &'a [u8],
     width: Width,
@@ -242,12 +206,10 @@ pub(crate) fn read_bytes_prefixed<'a>(
 // Boolean
 // ---------------------------------------------------------------------------
 
-/// Write a boolean as a single byte (0 or 1).
 pub(crate) fn write_bool(buf: &mut Vec<u8>, v: bool) {
     buf.push(if v { 1 } else { 0 });
 }
 
-/// Read a boolean from `input` (single byte, must be 0 or 1).
 pub(crate) fn read_bool(input: &mut &[u8]) -> CordResult<bool> {
     let b = read_bytes(input, 1)?[0];
     match b {
@@ -261,8 +223,6 @@ pub(crate) fn read_bool(input: &mut &[u8]) -> CordResult<bool> {
 // Canonical sort + dedup for maps and sets
 // ---------------------------------------------------------------------------
 
-/// Sort map entries by serialized key bytes and reject duplicate keys.
-/// Each entry is `(key_start, key_end, val_end)` — ranges into `buf`.
 pub(crate) fn sort_and_dedup_map(
     buf: &[u8],
     entries: &mut [(usize, usize, usize)],
@@ -271,18 +231,6 @@ pub(crate) fn sort_and_dedup_map(
     for w in entries.windows(2) {
         if buf[w[0].0..w[0].1] == buf[w[1].0..w[1].1] {
             return Err(CordError::DuplicateMapKey);
-        }
-    }
-    Ok(())
-}
-
-/// Sort set elements by serialized bytes and reject duplicates.
-/// Each entry is `(start, end)` — a range into `buf`.
-pub(crate) fn sort_and_dedup_set(buf: &[u8], ranges: &mut [(usize, usize)]) -> CordResult<()> {
-    ranges.sort_by(|(s1, e1), (s2, e2)| buf[*s1..*e1].cmp(&buf[*s2..*e2]));
-    for w in ranges.windows(2) {
-        if buf[w[0].0..w[0].1] == buf[w[1].0..w[1].1] {
-            return Err(CordError::DuplicateSetElement);
         }
     }
     Ok(())

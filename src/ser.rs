@@ -505,7 +505,6 @@ impl<T: Serialize + Clone + std::hash::Hash + Eq> Serialize for crate::Set<T> {
     }
 }
 
-/// Helper that serializes a pre-sorted slice of element references as a seq.
 struct SortedSetSeq<'a, T> {
     elements: &'a [&'a T],
     indices: &'a [usize],
@@ -544,7 +543,6 @@ impl ser::Serialize for crate::DateTime {
     }
 }
 
-/// Inner tuple payload for DateTime serialization.
 #[cfg(feature = "datetime")]
 struct DateTimeTuple {
     seconds: i64,
@@ -635,10 +633,7 @@ impl<K: Serialize, V: Serialize> Serialize for crate::Map<K, V> {
     }
 }
 
-/// Default Serialize impl for `Evolving<T>` — uses 32-bit length prefix.
-///
-/// For other widths (8-bit, 16-bit), use `#[cord(evolving = 8)]` or
-/// `#[cord(evolving = 16)]` with `#[derive(Cord)]`.
+/// Default Serialize impl for `Evolving<T>`.
 impl<T: Serialize> Serialize for crate::Evolving<T> {
     fn serialize<S>(&self, serializer: S) -> CordResult<S::Ok, S::Error>
     where
@@ -855,7 +850,7 @@ mod tests {
 
     #[test]
     fn serialize_f64_roundtrip() {
-        let value: f64 = 2.71828;
+        let value: f64 = std::f64::consts::E;
         let bytes = serialize(&value).unwrap();
         assert_eq!(bytes, value.to_be_bytes());
         let decoded: f64 = deserialize(&bytes).unwrap();
@@ -864,7 +859,7 @@ mod tests {
 
     #[test]
     fn serialize_f32_roundtrip() {
-        let value: f32 = 3.14;
+        let value: f32 = std::f32::consts::PI;
         let bytes = serialize(&value).unwrap();
         assert_eq!(bytes, value.to_be_bytes());
         let decoded: f32 = deserialize(&bytes).unwrap();
@@ -1368,7 +1363,6 @@ mod tests {
         assert_eq!(result, expected);
     }
 
-    #[cfg(feature = "unicode")]
     #[test]
     fn serialize_string_nfc_normalized() {
         // "é" as NFD (e + combining acute) should produce same bytes as NFC (é)

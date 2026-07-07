@@ -93,7 +93,6 @@ fn parse_cord_variant_index(variant: &Variant) -> syn::Result<Option<u32>> {
 // Wrapper token generation
 // ---------------------------------------------------------------------------
 
-/// Returns the ser wrapper path for a field attribute, or None if no wrapping needed.
 fn ser_wrapper(attr: &CordFieldAttr) -> Option<TokenStream2> {
     match attr {
         CordFieldAttr::Width(8) => Some(quote!(::cord::__private::Width8Ser)),
@@ -108,7 +107,6 @@ fn ser_wrapper(attr: &CordFieldAttr) -> Option<TokenStream2> {
     }
 }
 
-/// Extracts the inner type `T` from `Evolving<T>`.
 fn extract_evolving_inner(ty: &Type) -> Option<&Type> {
     if let Type::Path(type_path) = ty {
         let seg = type_path.path.segments.last()?;
@@ -123,8 +121,6 @@ fn extract_evolving_inner(ty: &Type) -> Option<&Type> {
     None
 }
 
-/// Returns the de wrapper type for a field attribute, wrapping the given field type.
-/// Returns None if no wrapping needed.
 fn de_wrapper(attr: &CordFieldAttr, field_ty: &Type) -> Option<TokenStream2> {
     match attr {
         CordFieldAttr::Width(8) => Some(quote!(::cord::__private::Width8De<#field_ty>)),
@@ -144,93 +140,6 @@ fn de_wrapper(attr: &CordFieldAttr, field_ty: &Type) -> Option<TokenStream2> {
         CordFieldAttr::Evolving(32) => None,
         CordFieldAttr::VarInt => Some(quote!(::cord::__private::VarIntDe<#field_ty>)),
         _ => unreachable!(),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// CordSchema / CordEncode / CordDecode helpers
-// ---------------------------------------------------------------------------
-
-/// Convert a width attribute value (8, 16, 32, 64) to a `Width` enum variant token.
-fn width_variant_token(w: u32) -> TokenStream2 {
-    match w {
-        8 => quote!(::cord::Width::W8),
-        16 => quote!(::cord::Width::W16),
-        32 => quote!(::cord::Width::W32),
-        64 => quote!(::cord::Width::W64),
-        _ => unreachable!(),
-    }
-}
-
-/// Generate the schema expression for a field based on its attribute.
-fn schema_expr_for_field(attr: &Option<CordFieldAttr>, field_ty: &Type) -> TokenStream2 {
-    match attr {
-        None => {
-            quote! { <#field_ty as ::cord::CordSchema>::schema() }
-        }
-        Some(CordFieldAttr::VarInt) => {
-            quote! { ::cord::Schema::VarInt(::std::boxed::Box::new(<#field_ty as ::cord::CordSchema>::schema())) }
-        }
-        Some(CordFieldAttr::Width(w)) => {
-            let width_variant = width_variant_token(*w);
-            quote! { ::cord::schema::with_width(<#field_ty as ::cord::CordSchema>::schema(), #width_variant) }
-        }
-        Some(CordFieldAttr::Evolving(w)) => {
-            let width_variant = width_variant_token(*w);
-            let inner_ty = extract_evolving_inner(field_ty)
-                .expect("evolving attribute requires Evolving<T> field type");
-            quote! { ::cord::Schema::Evolving(::std::boxed::Box::new(<#inner_ty as ::cord::CordSchema>::schema()), #width_variant) }
-        }
-    }
-}
-
-/// Generate the CordEncode expression for a field based on its attribute.
-fn encode_expr_for_field(
-    attr: &Option<CordFieldAttr>,
-    field_access: &TokenStream2,
-    _field_ty: &Type,
-) -> TokenStream2 {
-    match attr {
-        None => {
-            quote! { ::cord::CordEncode::encode_cord(&#field_access, __buf)?; }
-        }
-        Some(CordFieldAttr::VarInt) => {
-            quote! { ::cord::__private::encode_varint(__buf, #field_access)?; }
-        }
-        Some(CordFieldAttr::Width(w)) => {
-            let width = width_variant_token(*w);
-            quote! { ::cord::__private::encode_with_width(__buf, &#field_access, #width)?; }
-        }
-        Some(CordFieldAttr::Evolving(w)) => {
-            let width = width_variant_token(*w);
-            quote! { ::cord::__private::encode_evolving(__buf, &#field_access, #width)?; }
-        }
-    }
-}
-
-/// Generate the CordDecode expression for a field based on its attribute.
-fn decode_expr_for_field(
-    attr: &Option<CordFieldAttr>,
-    field_name: &proc_macro2::Ident,
-    field_ty: &Type,
-) -> TokenStream2 {
-    match attr {
-        None => {
-            quote! { let #field_name: #field_ty = ::cord::CordDecode::decode_cord(__input)?; }
-        }
-        Some(CordFieldAttr::VarInt) => {
-            quote! { let #field_name: #field_ty = ::cord::__private::decode_varint(__input)?; }
-        }
-        Some(CordFieldAttr::Width(w)) => {
-            let width = width_variant_token(*w);
-            quote! { let #field_name: #field_ty = ::cord::__private::decode_with_width(__input, #width)?; }
-        }
-        Some(CordFieldAttr::Evolving(w)) => {
-            let width = width_variant_token(*w);
-            let inner_ty = extract_evolving_inner(field_ty)
-                .expect("evolving attribute requires Evolving<T> field type");
-            quote! { let #field_name: #field_ty = ::cord::__private::decode_evolving::<#inner_ty>(__input, #width)?; }
-        }
     }
 }
 
@@ -422,46 +331,6 @@ fn derive_named_struct(
     let expecting_str = format!("struct {}", name);
     let field_strs: Vec<_> = field_names.iter().map(|n| n.to_string()).collect();
 
-    // --- CordSchema ---
-    let schema_fields: Vec<TokenStream2> = fields
-        .named
-        .iter()
-        .zip(field_attrs.iter())
-        .map(|(field, attr)| {
-            let field_name = field.ident.as_ref().unwrap().to_string();
-            let field_ty = &field.ty;
-            let schema = schema_expr_for_field(attr, field_ty);
-            quote! { (#field_name.to_string(), #schema) }
-        })
-        .collect();
-
-    // --- CordEncode ---
-    let encode_fields: Vec<TokenStream2> = fields
-        .named
-        .iter()
-        .zip(field_attrs.iter())
-        .map(|(field, attr)| {
-            let field_name = field.ident.as_ref().unwrap();
-            let field_ty = &field.ty;
-            let access = quote! { self.#field_name };
-            encode_expr_for_field(attr, &access, field_ty)
-        })
-        .collect();
-
-    // --- CordDecode ---
-    let decode_fields: Vec<TokenStream2> = fields
-        .named
-        .iter()
-        .zip(field_attrs.iter())
-        .map(|(field, attr)| {
-            let field_name = field.ident.as_ref().unwrap();
-            let field_ty = &field.ty;
-            decode_expr_for_field(attr, field_name, field_ty)
-        })
-        .collect();
-
-    let field_names_for_decode: Vec<_> = field_names.clone();
-
     Ok(quote! {
         impl #impl_gen_ser ::serde::Serialize for #name #gp #ser_bounds {
             fn serialize<__S: ::serde::Serializer>(&self, serializer: __S)
@@ -507,25 +376,6 @@ fn derive_named_struct(
             }
         }
 
-        impl #impl_gen_ser ::cord::CordSchema for #name #gp #ser_bounds {
-            fn schema() -> ::cord::Schema {
-                ::cord::Schema::Struct(::std::vec![#(#schema_fields),*])
-            }
-        }
-
-        impl #impl_gen_ser ::cord::CordEncode for #name #gp #ser_bounds {
-            fn encode_cord(&self, __buf: &mut ::std::vec::Vec<u8>) -> ::cord::CordResult<()> {
-                #(#encode_fields)*
-                Ok(())
-            }
-        }
-
-        impl ::cord::CordDecode for #name #gp {
-            fn decode_cord(__input: &mut &[u8]) -> ::cord::CordResult<Self> {
-                #(#decode_fields)*
-                Ok(#name { #(#field_names_for_decode),* })
-            }
-        }
     })
 }
 
@@ -624,48 +474,6 @@ fn derive_tuple_struct(
 
     let expecting_str = format!("tuple struct {}", name);
 
-    // --- CordSchema ---
-    let schema_fields_tuple: Vec<TokenStream2> = fields
-        .unnamed
-        .iter()
-        .zip(field_attrs.iter())
-        .map(|(field, attr)| {
-            let field_ty = &field.ty;
-            schema_expr_for_field(attr, field_ty)
-        })
-        .collect();
-
-    // --- CordEncode ---
-    let encode_fields_tuple: Vec<TokenStream2> = fields
-        .unnamed
-        .iter()
-        .zip(field_attrs.iter())
-        .enumerate()
-        .map(|(i, (field, attr))| {
-            let idx = syn::Index::from(i);
-            let field_ty = &field.ty;
-            let access = quote! { self.#idx };
-            encode_expr_for_field(attr, &access, field_ty)
-        })
-        .collect();
-
-    // --- CordDecode ---
-    let decode_fields_tuple: Vec<TokenStream2> = fields
-        .unnamed
-        .iter()
-        .zip(field_attrs.iter())
-        .enumerate()
-        .map(|(i, (field, attr))| {
-            let ident = format_ident!("__v{}", i);
-            let field_ty = &field.ty;
-            decode_expr_for_field(attr, &ident, field_ty)
-        })
-        .collect();
-
-    let field_idents_for_decode: Vec<_> = (0..field_count)
-        .map(|i| format_ident!("__v{}", i))
-        .collect();
-
     Ok(quote! {
         impl #impl_gen_ser ::serde::Serialize for #name #gp #ser_bounds {
             fn serialize<__S: ::serde::Serializer>(&self, serializer: __S)
@@ -708,25 +516,6 @@ fn derive_tuple_struct(
             }
         }
 
-        impl #impl_gen_ser ::cord::CordSchema for #name #gp #ser_bounds {
-            fn schema() -> ::cord::Schema {
-                ::cord::Schema::Tuple(::std::vec![#(#schema_fields_tuple),*])
-            }
-        }
-
-        impl #impl_gen_ser ::cord::CordEncode for #name #gp #ser_bounds {
-            fn encode_cord(&self, __buf: &mut ::std::vec::Vec<u8>) -> ::cord::CordResult<()> {
-                #(#encode_fields_tuple)*
-                Ok(())
-            }
-        }
-
-        impl ::cord::CordDecode for #name #gp {
-            fn decode_cord(__input: &mut &[u8]) -> ::cord::CordResult<Self> {
-                #(#decode_fields_tuple)*
-                Ok(#name(#(#field_idents_for_decode),*))
-            }
-        }
     })
 }
 
@@ -779,23 +568,6 @@ fn derive_unit_struct(
             }
         }
 
-        impl #impl_gen_ser ::cord::CordSchema for #name #gp #ser_bounds {
-            fn schema() -> ::cord::Schema {
-                ::cord::Schema::Unit
-            }
-        }
-
-        impl #impl_gen_ser ::cord::CordEncode for #name #gp #ser_bounds {
-            fn encode_cord(&self, _buf: &mut ::std::vec::Vec<u8>) -> ::cord::CordResult<()> {
-                Ok(())
-            }
-        }
-
-        impl ::cord::CordDecode for #name #gp {
-            fn decode_cord(_input: &mut &[u8]) -> ::cord::CordResult<Self> {
-                Ok(#name)
-            }
-        }
     })
 }
 
@@ -1051,146 +823,6 @@ fn derive_enum(input: &DeriveInput, data: &DataEnum) -> syn::Result<TokenStream2
         })
         .collect();
 
-    // --- CordSchema ---
-    let schema_variants: Vec<TokenStream2> = indices
-        .iter()
-        .map(|(_, variant)| {
-            let vname_str = variant.ident.to_string();
-            match &variant.fields {
-                Fields::Unit => {
-                    quote! { (#vname_str.to_string(), ::cord::VariantSchema::Unit) }
-                }
-                Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
-                    let field_ty = &fields.unnamed.first().unwrap().ty;
-                    quote! { (#vname_str.to_string(), ::cord::VariantSchema::Newtype(<#field_ty as ::cord::CordSchema>::schema())) }
-                }
-                Fields::Unnamed(fields) => {
-                    let field_schemas: Vec<TokenStream2> = fields.unnamed.iter().map(|f| {
-                        let ty = &f.ty;
-                        quote! { <#ty as ::cord::CordSchema>::schema() }
-                    }).collect();
-                    quote! { (#vname_str.to_string(), ::cord::VariantSchema::Tuple(::std::vec![#(#field_schemas),*])) }
-                }
-                Fields::Named(fields) => {
-                    let field_schemas: Vec<TokenStream2> = fields.named.iter().map(|f| {
-                        let fname = f.ident.as_ref().unwrap().to_string();
-                        let ty = &f.ty;
-                        quote! { (#fname.to_string(), <#ty as ::cord::CordSchema>::schema()) }
-                    }).collect();
-                    quote! { (#vname_str.to_string(), ::cord::VariantSchema::Struct(::std::vec![#(#field_schemas),*])) }
-                }
-            }
-        })
-        .collect();
-
-    // --- CordEncode ---
-    let encode_arms: Vec<TokenStream2> = indices
-        .iter()
-        .map(|(idx, variant)| {
-            let vname = &variant.ident;
-            match &variant.fields {
-                Fields::Unit => {
-                    quote! {
-                        #name::#vname => {
-                            ::cord::__private::encode_variant_index(__buf, #idx, ::cord::Width::W32)?;
-                        }
-                    }
-                }
-                Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
-                    quote! {
-                        #name::#vname(ref __v0) => {
-                            ::cord::__private::encode_variant_index(__buf, #idx, ::cord::Width::W32)?;
-                            ::cord::CordEncode::encode_cord(__v0, __buf)?;
-                        }
-                    }
-                }
-                Fields::Unnamed(fields) => {
-                    let field_idents: Vec<_> = (0..fields.unnamed.len())
-                        .map(|i| format_ident!("__v{}", i))
-                        .collect();
-                    let pattern = quote!( #(ref #field_idents),* );
-                    let encodes: Vec<TokenStream2> = field_idents
-                        .iter()
-                        .map(|id| quote! { ::cord::CordEncode::encode_cord(#id, __buf)?; })
-                        .collect();
-                    quote! {
-                        #name::#vname(#pattern) => {
-                            ::cord::__private::encode_variant_index(__buf, #idx, ::cord::Width::W32)?;
-                            #(#encodes)*
-                        }
-                    }
-                }
-                Fields::Named(fields) => {
-                    let field_names: Vec<_> = fields
-                        .named
-                        .iter()
-                        .map(|f| f.ident.as_ref().unwrap())
-                        .collect();
-                    let pattern = quote!( #(ref #field_names),* );
-                    let encodes: Vec<TokenStream2> = field_names
-                        .iter()
-                        .map(|n| quote! { ::cord::CordEncode::encode_cord(#n, __buf)?; })
-                        .collect();
-                    quote! {
-                        #name::#vname { #pattern } => {
-                            ::cord::__private::encode_variant_index(__buf, #idx, ::cord::Width::W32)?;
-                            #(#encodes)*
-                        }
-                    }
-                }
-            }
-        })
-        .collect();
-
-    // --- CordDecode ---
-    let decode_arms: Vec<TokenStream2> = indices
-        .iter()
-        .map(|(idx, variant)| {
-            let vname = &variant.ident;
-            match &variant.fields {
-                Fields::Unit => {
-                    quote! { #idx => Ok(#name::#vname), }
-                }
-                Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
-                    let ty = &fields.unnamed.first().unwrap().ty;
-                    quote! { #idx => Ok(#name::#vname(<#ty as ::cord::CordDecode>::decode_cord(__input)?)), }
-                }
-                Fields::Unnamed(fields) => {
-                    let field_decodes: Vec<TokenStream2> = fields.unnamed.iter().enumerate().map(|(i, f)| {
-                        let ident = format_ident!("__v{}", i);
-                        let ty = &f.ty;
-                        quote! { let #ident = <#ty as ::cord::CordDecode>::decode_cord(__input)?; }
-                    }).collect();
-                    let field_idents: Vec<_> = (0..fields.unnamed.len())
-                        .map(|i| format_ident!("__v{}", i))
-                        .collect();
-                    quote! {
-                        #idx => {
-                            #(#field_decodes)*
-                            Ok(#name::#vname(#(#field_idents),*))
-                        }
-                    }
-                }
-                Fields::Named(fields) => {
-                    let field_decodes: Vec<TokenStream2> = fields.named.iter().map(|f| {
-                        let fname = f.ident.as_ref().unwrap();
-                        let ty = &f.ty;
-                        quote! { let #fname = <#ty as ::cord::CordDecode>::decode_cord(__input)?; }
-                    }).collect();
-                    let field_names: Vec<_> = fields.named.iter()
-                        .map(|f| f.ident.as_ref().unwrap())
-                        .collect();
-                    quote! {
-                        #idx => {
-                            #(#field_decodes)*
-                            Ok(#name::#vname { #(#field_names),* })
-                        }
-                    }
-                }
-            }
-        })
-        .collect();
-
     Ok(quote! {
         impl #impl_gen_ser ::serde::Serialize for #name #gp #ser_bounds {
             fn serialize<__S: ::serde::Serializer>(&self, serializer: __S)
@@ -1268,32 +900,5 @@ fn derive_enum(input: &DeriveInput, data: &DataEnum) -> syn::Result<TokenStream2
             }
         }
 
-        impl #impl_gen_ser ::cord::CordSchema for #name #gp #ser_bounds {
-            fn schema() -> ::cord::Schema {
-                ::cord::Schema::Enum(
-                    ::std::vec![#(#schema_variants),*],
-                    ::cord::Width::default(),
-                )
-            }
-        }
-
-        impl #impl_gen_ser ::cord::CordEncode for #name #gp #ser_bounds {
-            fn encode_cord(&self, __buf: &mut ::std::vec::Vec<u8>) -> ::cord::CordResult<()> {
-                match self {
-                    #(#encode_arms)*
-                }
-                Ok(())
-            }
-        }
-
-        impl ::cord::CordDecode for #name #gp {
-            fn decode_cord(__input: &mut &[u8]) -> ::cord::CordResult<Self> {
-                let __variant_index = ::cord::__private::decode_variant_index(__input, ::cord::Width::W32)?;
-                match __variant_index {
-                    #(#decode_arms)*
-                    _ => ::core::result::Result::Err(::cord::CordError::UnknownVariant(__variant_index)),
-                }
-            }
-        }
     })
 }

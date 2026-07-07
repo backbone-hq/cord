@@ -5,14 +5,11 @@
 //! delegate to these traits when used with the Cord serializer.
 
 use crate::result::{CordError, CordResult};
-use crate::schema::Width;
+use crate::Width;
 
 /// Direct wire encoding for Cord types.
-///
-/// Types implementing this trait can be encoded to canonical Cord bytes
-/// without going through serde's serialization pipeline.
 pub trait CordEncode {
-    /// Encode this value into the buffer, appending canonical Cord bytes.
+    /// Encode this value, appending canonical Cord bytes.
     fn encode_cord(&self, buf: &mut Vec<u8>) -> CordResult<()>;
 
     /// Encode this value with a specific width for length prefixes.
@@ -26,11 +23,8 @@ pub trait CordEncode {
 }
 
 /// Direct wire decoding for Cord types.
-///
-/// Types implementing this trait can be decoded from canonical Cord bytes
-/// without going through serde's deserialization pipeline.
 pub trait CordDecode: Sized {
-    /// Decode a value from the input bytes, advancing the slice past the consumed bytes.
+    /// Decode a value from the input bytes.
     fn decode_cord(input: &mut &[u8]) -> CordResult<Self>;
 
     /// Decode a value with a specific width for length prefixes.
@@ -323,14 +317,14 @@ impl CordDecode for crate::Uuid {
 // Convenience functions
 // ---------------------------------------------------------------------------
 
-/// Encode a value to canonical Cord bytes using the CordEncode trait.
+/// Encode a value to canonical Cord bytes.
 pub fn encode<T: CordEncode>(value: &T) -> CordResult<Vec<u8>> {
     let mut buf = Vec::with_capacity(64);
     value.encode_cord(&mut buf)?;
     Ok(buf)
 }
 
-/// Decode a value from canonical Cord bytes using the CordDecode trait.
+/// Decode a value from canonical Cord bytes.
 pub fn decode<T: CordDecode>(bytes: &[u8]) -> CordResult<T> {
     let mut input = bytes;
     let value = T::decode_cord(&mut input)?;

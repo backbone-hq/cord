@@ -8,7 +8,6 @@
 Cord is a compact deterministic serialization format for Rust with first-class [serde](https://serde.rs) integration.
 
 - **Rich type system** — structs, enums, sets, maps, byte arrays, date-times, decimals, UUIDs, options, and more
-- **Dynamic schemas** — define data structures at runtime, encode and decode without compiled types, and mix freely with the serde path
 - **Forward evolution** — wrap fields in `Evolving<T>` to round-trip unknown data (e.g., new enum variants) without data loss
 - **Fine-grained wire control** — tune integer encoding, length prefix widths, and variant index sizes per field
 - **Deterministic output** — every unique value produces exactly one byte sequence, making it safe to sign, hash, cache, and deduplicate serialized data
@@ -135,11 +134,11 @@ If a newer version adds `Status::Pending` and serializes it, older code will des
 
 The `#[cord(evolving = N)]` attribute controls the width of the length prefix used for the envelope:
 
-| Attribute              | Payload Length Prefix | Max Payload Size |
+| Attribute | Payload Length Prefix | Max Payload Size |
 | ---------------------- | --------------------- | ---------------- |
-| `#[cord(evolving = 8)]`  | u8                 | 255 bytes        |
-| `#[cord(evolving = 16)]` | u16                | 65,535 bytes     |
-| `#[cord(evolving = 32)]` | u32 (default)      | ~4 GiB           |
+| `#[cord(evolving = 8)]` | u8 | 255 bytes |
+| `#[cord(evolving = 16)]` | u16 | 65,535 bytes |
+| `#[cord(evolving = 32)]` | u32 (default) | ~4 GiB |
 
 ```rust
 #[derive(Cord, Debug, PartialEq)]
@@ -152,95 +151,9 @@ struct CompactMessage {
 
 Without the attribute, `Evolving<T>` defaults to a 32-bit length prefix.
 
-## Dynamic Schemas
+## Hashing
 
-For use cases where the data structure isn't known at compile time, Cord provides a dynamic path with runtime schemas. Schemas are themselves serializable Cord types, so you get schema hashing, compact binary representation, and schema-as-data for free.
-
-### Defining a Schema
-
-```rust
-use cord::Schema;
-
-let user_schema = Schema::Struct(vec![
-    ("name".into(), Schema::string()),
-    ("age".into(), Schema::U32),
-    ("active".into(), Schema::Bool),
-]);
-```
-
-Schemas support the full range of Cord types via convenience constructors:
-
-```rust
-use cord::Schema;
-
-let schema = Schema::Struct(vec![
-    ("id".into(), Schema::varint(Schema::U32)),
-    ("tags".into(), Schema::set(Schema::string())),
-    ("metadata".into(), Schema::map(Schema::string(), Schema::string())),
-    ("nickname".into(), Schema::option(Schema::string())),
-]);
-```
-
-### Encoding and Decoding
-
-Use `cord::dynamic::encode` and `cord::dynamic::decode` when both sides agree on the schema:
-
-```rust
-use cord::{Schema, Value};
-use cord::dynamic;
-
-let schema = Schema::Struct(vec![
-    ("name".into(), Schema::string()),
-    ("age".into(), Schema::U32),
-]);
-
-let value = Value::Struct(vec![
-    ("name".into(), Value::String("Alice".into())),
-    ("age".into(), Value::U32(30)),
-]);
-
-// Encode to bytes — produces the same output as the serde path
-let bytes = dynamic::encode(&value, &schema).unwrap();
-
-// Decode back
-let decoded = dynamic::decode(&schema, &bytes).unwrap();
-assert_eq!(decoded, value);
-```
-
-### Cross-Path Compatibility
-
-The dynamic path produces identical bytes to the serde path, so you can freely mix them:
-
-```rust
-use cord::{serialize, deserialize, Cord, Schema, Value};
-use cord::dynamic;
-
-#[derive(Cord, Debug, PartialEq)]
-struct User {
-    name: String,
-    age: u32,
-}
-
-let schema = Schema::Struct(vec![
-    ("name".into(), Schema::string()),
-    ("age".into(), Schema::U32),
-]);
-
-// Serialize with serde, decode dynamically
-let user = User { name: "Alice".into(), age: 30 };
-let serde_bytes = serialize(&user).unwrap();
-let dynamic_val = dynamic::decode(&schema, &serde_bytes).unwrap();
-
-// Encode dynamically, deserialize with serde
-let dynamic_bytes = dynamic::encode(&dynamic_val, &schema).unwrap();
-assert_eq!(serde_bytes, dynamic_bytes);
-let decoded_user: User = deserialize(&dynamic_bytes).unwrap();
-assert_eq!(decoded_user, user);
-```
-
-### Hashing
-
-Since Cord guarantees deterministic serialization, you can compute canonical hashes of any serializable value — schemas, typed structs, dynamic values, or anything else. Enable the `hash` feature for built-in SHA3-256 hashing:
+Since Cord guarantees deterministic serialization, you can compute canonical hashes of any serializable value with the built-in SHA3-256 hashing:
 
 ```bash
 cargo add cord --features hash
@@ -280,57 +193,6 @@ let user = User { name: "Alice".into(), age: 30 };
 let bytes = serialize(&user).unwrap();
 // Hash bytes with any algorithm you prefer
 ```
-
-## Dynamic Values
-
-Build dynamic values with JSON-like syntax using the `cord_value!` macro:
-
-```rust
-use cord::{cord_value, to_value, from_value, Cord, Value};
-
-#[derive(Cord, Debug, PartialEq)]
-struct User {
-    name: String,
-    age: u32,
-    active: bool,
-}
-
-// Build a Value with JSON-like syntax
-let value = cord_value!({
-    "name": "Alice",
-    "age": 30_u32,
-    "tags": ["admin", "user"],
-    "active": true,
-});
-
-// Convert a Value to a typed struct with from_value
-let user_value = cord_value!({
-    "name": "Alice",
-    "age": 30_u32,
-    "active": true,
-});
-let user: User = from_value(&user_value).unwrap();
-assert_eq!(user.name, "Alice");
-
-// Go the other direction: typed struct → Value
-let value2 = to_value(&user).unwrap();
-assert_eq!(user_value, value2);
-
-// Pattern match to inspect fields directly
-if let Value::Struct(fields) = &user_value {
-    let (name, val) = &fields[0];
-    assert_eq!(name, "name");
-    assert_eq!(*val, Value::String("Alice".into()));
-}
-```
-
-Type mapping for `cord_value!`:
-- `{ "key": value, ... }` becomes `Value::Struct`
-- `[a, b, c]` becomes `Value::Seq`
-- String literals become `Value::String`
-- `true`/`false` become `Value::Bool`
-- Integer literals use Rust's type inference — unsuffixed integers default to `i32`, use suffixes like `30_u32` or `7_u8` for explicit types
-- Parenthesized expressions `(expr)` allow embedding variables and function calls
 
 ## Tuning the Wire Format
 
@@ -431,7 +293,7 @@ Cord enforces NFC (Canonical Decomposition followed by Canonical Composition) no
 
 ## Depth Limiting
 
-The deserializer enforces a maximum nesting depth to protect against stack overflows from deeply nested or malicious input. Both the serde and dynamic decoding paths track depth and return `CordError::DepthLimitExceeded` if the limit is exceeded. The default limit is 128, available as `cord::DEFAULT_MAX_DEPTH`.
+The deserializer enforces a maximum nesting depth of 128 to protect against stack overflows from deeply nested or malicious input, returning `CordError::DepthLimitExceeded` if the limit is exceeded.
 
 ```rust
 use cord::deserialize;
@@ -482,10 +344,6 @@ let result: Result<_, _> = deserialize::<Option<Option<Option<u8>>>>(&bytes);
 ## Performance
 
 Cord v2 uses fixed-width big-endian encoding by default (16 bytes for 128-bit integers), which is fast to encode and decode. For size-sensitive applications, `#[cord(varint)]` and `#[cord(width = N)]` trade some speed for smaller output. Sets and Maps incur a sort during serialization.
-
-```bash
-cargo bench --bench performance
-```
 
 ## Migrating from v1
 

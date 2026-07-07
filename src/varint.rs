@@ -7,18 +7,11 @@
 //! This is wire-compatible with the `integer-encoding` crate for u8–u64 / i8–i64
 //! and extends the same scheme to 128-bit integers.
 
-/// Variable-length integer encoding trait.
 pub trait VarIntEncoding: Sized + Copy {
-    /// Number of bytes required for the minimal encoding of this value.
     fn required_space(self) -> usize;
-
-    /// Decode from LEB128/zigzag bytes. Returns `(value, bytes_consumed)` or `None`.
     fn decode_var(src: &[u8]) -> Option<(Self, usize)>;
-
-    /// Encode into `dst` (must be at least `required_space()` bytes). Returns bytes written.
     fn encode_var(self, dst: &mut [u8]) -> usize;
 
-    /// Convenience: encode and return as a new `Vec<u8>`.
     #[cfg(test)]
     fn encode_var_vec(self) -> Vec<u8> {
         let mut v = vec![0u8; self.required_space()];

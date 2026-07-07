@@ -19,12 +19,9 @@ use serde::{de, Deserialize, Deserializer, Serialize};
 use std::fmt::Formatter;
 use std::marker::PhantomData;
 
-/// Default maximum nesting depth for deserialization.
-pub const DEFAULT_MAX_DEPTH: usize = 128;
+pub(crate) const DEFAULT_MAX_DEPTH: usize = 128;
 
-/// Default maximum length for variable-length types (strings, bytes, sequences, maps).
-/// Set to 16 MiB worth of elements.
-pub const DEFAULT_MAX_LENGTH: usize = 16 * 1024 * 1024;
+pub(crate) const DEFAULT_MAX_LENGTH: usize = 16 * 1024 * 1024;
 
 pub fn deserialize<'a, T>(bytes: &'a [u8]) -> CordResult<T>
 where
@@ -34,83 +31,6 @@ where
     let result = T::deserialize(&mut deserializer)?;
     deserializer.end()?;
     Ok(result)
-}
-
-/// Options for configuring the Cord deserializer.
-///
-/// Use the builder methods to override the default limits, then call
-/// [`deserialize`](DeserializeOptions::deserialize) to decode a value.
-///
-/// # Examples
-///
-/// ```
-/// use cord::DeserializeOptions;
-///
-/// let encoded = cord::serialize(&42u32).unwrap();
-/// let options = DeserializeOptions::new()
-///     .max_depth(16)
-///     .max_length(1024);
-///
-/// let value: u32 = options.deserialize(&encoded).unwrap();
-/// assert_eq!(value, 42);
-/// ```
-#[derive(Debug, Clone)]
-pub struct DeserializeOptions {
-    max_depth: usize,
-    max_length: usize,
-}
-
-impl Default for DeserializeOptions {
-    fn default() -> Self {
-        Self {
-            max_depth: DEFAULT_MAX_DEPTH,
-            max_length: DEFAULT_MAX_LENGTH,
-        }
-    }
-}
-
-impl DeserializeOptions {
-    /// Create a new `DeserializeOptions` with default limits.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Set the maximum nesting depth (default: 128).
-    pub fn max_depth(mut self, max_depth: usize) -> Self {
-        self.max_depth = max_depth;
-        self
-    }
-
-    /// Set the maximum length for variable-length types in elements (default: 16 MiB).
-    pub fn max_length(mut self, max_length: usize) -> Self {
-        self.max_length = max_length;
-        self
-    }
-
-    /// Deserialize a value from bytes using these options.
-    pub fn deserialize<'a, T>(&self, bytes: &'a [u8]) -> CordResult<T>
-    where
-        T: Deserialize<'a>,
-    {
-        let mut deserializer =
-            CordDeserializer::with_options(bytes, self.max_depth, self.max_length);
-        let result = T::deserialize(&mut deserializer)?;
-        deserializer.end()?;
-        Ok(result)
-    }
-}
-
-/// Deserialize a value from the beginning of a byte slice, returning the
-/// value and the number of bytes consumed. Unlike [`deserialize`], this
-/// does **not** require that all bytes are consumed.
-pub fn deserialize_prefix<'a, T>(bytes: &'a [u8]) -> CordResult<(T, usize)>
-where
-    T: Deserialize<'a>,
-{
-    let mut deserializer = CordDeserializer::new(bytes);
-    let result = T::deserialize(&mut deserializer)?;
-    let consumed = bytes.len() - deserializer.input.len();
-    Ok((result, consumed))
 }
 
 pub(crate) struct CordDeserializer<'de> {
@@ -129,16 +49,6 @@ impl<'de> CordDeserializer<'de> {
             depth: 0,
             max_depth: DEFAULT_MAX_DEPTH,
             max_length: DEFAULT_MAX_LENGTH,
-        }
-    }
-
-    pub(crate) fn with_options(input: &'de [u8], max_depth: usize, max_length: usize) -> Self {
-        CordDeserializer {
-            input,
-            hint: EncodingHint::Default,
-            depth: 0,
-            max_depth,
-            max_length,
         }
     }
 
@@ -164,9 +74,6 @@ impl<'de> CordDeserializer<'de> {
     }
 
     /// Reset all sentinel state to defaults.
-    ///
-    /// Called before each field/element/key/value deserialization to match
-    /// the serializer's behavior of creating a fresh CordSerializer per element.
     fn reset_sentinels(&mut self) {
         self.hint = EncodingHint::Default;
     }
@@ -1011,10 +918,7 @@ where
     }
 }
 
-/// Default Deserialize impl for `Evolving<T>` — uses 32-bit length prefix.
-///
-/// For other widths (8-bit, 16-bit), use `#[cord(evolving = 8)]` or
-/// `#[cord(evolving = 16)]` with `#[derive(Cord)]`.
+/// Default Deserialize impl for `Evolving<T>`.
 struct EvolvingVisitor<T> {
     marker: PhantomData<T>,
 }
@@ -1067,10 +971,7 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for crate::Evolving<T> {
     }
 }
 
-/// A minimal deserializer that serves a fixed byte slice for `deserialize_bytes`.
-///
-/// Used by the UUID sentinel so the inner `UuidVisitor` can receive
-/// exactly 16 bytes without a length prefix on the wire.
+/// Used by the UUID sentinel to serve exactly 16 raw bytes without a length prefix.
 #[cfg(feature = "uuid")]
 pub(crate) struct FixedBytesDeserializer<'de> {
     pub(crate) bytes: &'de [u8],
@@ -1640,7 +1541,6 @@ mod tests {
         assert_eq!(decoded, original);
     }
 
-    #[cfg(feature = "unicode")]
     #[test]
     fn deserialize_non_nfc_string_fails() {
         // Manually craft bytes for NFD "é" (e + combining acute = 0x65 0xCC 0x81)
@@ -1879,7 +1779,6 @@ mod tests {
         assert_eq!(decoded, original);
     }
 
-    #[cfg(feature = "unicode")]
     #[test]
     fn evolving_non_canonical_payload_is_hard_error() {
         // Craft an Evolving32 payload containing a known variant (0 = Active)
@@ -1959,10 +1858,7 @@ mod tests {
         // Build deeply nested Option<Option<...Option<u8>...>> bytes manually.
         // Each Some is a 0x01 byte prefix. Nesting 200 Options exceeds the default limit of 128.
         let depth = 200_usize;
-        let mut bytes = Vec::new();
-        for _ in 0..depth {
-            bytes.push(1u8); // Some discriminant
-        }
+        let mut bytes = vec![1u8; depth];
         bytes.push(42u8); // the inner u8
 
         // This type nests 200 Options deep — too much for the default limit
@@ -2191,27 +2087,20 @@ mod tests {
     }
 
     #[test]
-    fn deserialize_options_default_works() {
-        let encoded = crate::serialize(&42u32).unwrap();
-        let result: u32 = super::DeserializeOptions::new()
-            .deserialize(&encoded)
-            .unwrap();
-        assert_eq!(result, 42);
-    }
-
-    #[test]
     fn deserialize_options_custom_max_length() {
         let val = "hello".to_string();
         let encoded = crate::serialize(&val).unwrap();
 
         // Length 5 exceeds max_length of 3
-        let opts = super::DeserializeOptions::new().max_length(3);
-        let result = opts.deserialize::<String>(&encoded);
+        let mut de = super::CordDeserializer::new(&encoded);
+        de.max_length = 3;
+        let result = String::deserialize(&mut de);
         assert!(result.is_err());
 
         // Length 5 is within max_length of 5
-        let opts = super::DeserializeOptions::new().max_length(5);
-        let result: String = opts.deserialize(&encoded).unwrap();
+        let mut de = super::CordDeserializer::new(&encoded);
+        de.max_length = 5;
+        let result: String = String::deserialize(&mut de).unwrap();
         assert_eq!(result, "hello");
     }
 
@@ -2222,23 +2111,24 @@ mod tests {
         let encoded = crate::serialize(&val).unwrap();
 
         // Depth limit of 1 should fail on the nested vec
-        let opts = super::DeserializeOptions::new().max_depth(1);
-        let result = opts.deserialize::<Vec<Vec<u8>>>(&encoded);
+        let mut de = super::CordDeserializer::new(&encoded);
+        de.max_depth = 1;
+        let result = Vec::<Vec<u8>>::deserialize(&mut de);
         assert!(result.is_err());
 
         // Default depth should succeed
-        let opts = super::DeserializeOptions::new();
-        let result: Vec<Vec<u8>> = opts.deserialize(&encoded).unwrap();
+        let mut de = super::CordDeserializer::new(&encoded);
+        let result: Vec<Vec<u8>> = Vec::deserialize(&mut de).unwrap();
         assert_eq!(result, val);
     }
 
     #[test]
     fn deserialize_options_builder_chaining() {
-        let opts = super::DeserializeOptions::new()
-            .max_depth(10)
-            .max_length(256);
         let encoded = crate::serialize(&"hi".to_string()).unwrap();
-        let result: String = opts.deserialize(&encoded).unwrap();
+        let mut de = super::CordDeserializer::new(&encoded);
+        de.max_depth = 10;
+        de.max_length = 256;
+        let result: String = String::deserialize(&mut de).unwrap();
         assert_eq!(result, "hi");
     }
 }
